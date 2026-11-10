@@ -2,7 +2,7 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=19";
+import { getVehicles, lineKey } from "./vehicles.js?v=20";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -342,26 +342,39 @@ export function setPlanTapHandler(cb) {
 function renderStops(hide) {
   const center = map.getCenter();
   const keep = new Set();
-  // Stop chosen (stops mode): every stop along its routes, small, no distance limit.
-  // Otherwise: all stops within 2 km of the centre, normal size.
-  // Small dots, no distance limit: a chosen stop's route stops, or a shown trip's stops.
+  // Which stop dots to show:
+  //  - trip shown (plan): the trip's stops, small
+  //  - route from the Routes tab: its stops, small
+  //  - stop chosen: none, until a line is chosen; then that line's stops, small
+  //  - Near me: only the stops within 200 m (normal size), until a line is
+  //    chosen; then that line's stops, small
+  //  - otherwise: all stops within 2 km of the centre, normal size
   const tripView = mode === "plan" && plan.tripStops.length > 0;
-  const wholeRoute = mode === "stops" && !selected && routeView;
-  const nearLine = mode === "stops" && !selected && nearView && nearView.filter;
-  const small = (mode === "stops" && selected) || tripView || wholeRoute || nearLine;
-  if (!hide && !small) ensureCells(center);
+  const stopsMode = mode === "stops";
+  const wholeRoute = stopsMode && !selected && routeView;
+  const nearLine = stopsMode && !selected && !routeView && nearView && nearView.filter;
+  const nearCircle = stopsMode && !selected && !routeView && nearView && !nearView.filter;
+  const stopLine = stopsMode && selected && selected.lineFilter;
+  const stopOnly = stopsMode && selected && !selected.lineFilter;
+  const small = tripView || wholeRoute || nearLine || stopLine;
+  const limited = small || nearCircle || stopOnly; // no 2 km rule, no loading
+  if (!hide && !limited) ensureCells(center);
   const source = tripView
     ? plan.tripStops
     : wholeRoute
       ? routeView.stops
       : nearLine
         ? [...nearView.routeStops.values()]
-      : small
-        ? [...selected.routeStops.values()].filter((s) => s.gtfsId !== selected.stop.gtfsId)
-        : stopsById.values();
+        : nearCircle
+          ? nearView.circleStops
+          : stopLine
+            ? [...selected.routeStops.values()].filter((s) => s.gtfsId !== selected.stop.gtfsId)
+            : stopOnly
+              ? []
+              : stopsById.values();
   if (!hide) {
     for (const s of source) {
-      if (!small && map.distance(center, [s.lat, s.lon]) > STOP_RADIUS_M) continue;
+      if (!limited && map.distance(center, [s.lat, s.lon]) > STOP_RADIUS_M) continue;
       keep.add(s.gtfsId);
       const existing = stopDots.get(s.gtfsId);
       if (existing && existing._small === !!small) continue;
@@ -534,17 +547,35 @@ export function hasRoute() {
 // ---------- Routes near you (from the Near me panel) ----------
 
 /** Draw all routes through the nearby stops in one neutral colour. */
-export function showNearRoutes(patterns) {
+/** Start the Near me view: only the stops within 200 m are shown. */
+export function setNearStops(stops) {
+  clearStop(false);
+  clearRoute(false);
   clearNearRoutes(false);
   if (!nearRenderer) nearRenderer = L.canvas({ padding: 0.3 });
-  nearView = { layer: L.layerGroup(), patterns, colors: new Map(), filter: null, routeStops: new Map() };
+  nearView = {
+    layer: L.layerGroup(),
+    patterns: [],
+    colors: new Map(),
+    filter: null,
+    routeStops: new Map(),
+    circleStops: stops,
+  };
+  if (mode === "stops") nearView.layer.addTo(map);
+  render();
+}
+
+/** Draw all routes through the nearby stops in one neutral colour. */
+export function showNearRoutes(patterns) {
+  if (!nearView) return;
+  nearView.patterns = patterns;
+  nearView.colors.clear();
   for (const p of patterns) {
     const key = lineKey(p.mode, p.line);
     if (!nearView.colors.has(key)) {
       nearView.colors.set(key, LINE_COLORS[nearView.colors.size % LINE_COLORS.length]);
     }
   }
-  if (mode === "stops") nearView.layer.addTo(map);
   drawNear();
 }
 

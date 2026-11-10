@@ -4,15 +4,15 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule, getNearbyDepartures, getStopsPatterns,
-} from "./peatus.js?v=19";
+} from "./peatus.js?v=20";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, lineColor, setMode,
   initLocation, getMyPosition, getLocationError, showRoute, clearRoute,
-  showNearRoutes, setNearFilter, clearNearRoutes,
-} from "./map.js?v=19";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=19";
-import { initRoutes, enterRoutes } from "./routes.js?v=19";
+  showNearRoutes, setNearFilter, clearNearRoutes, setNearStops,
+} from "./map.js?v=20";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=20";
+import { initRoutes, enterRoutes } from "./routes.js?v=20";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -605,7 +605,9 @@ function openNear() {
   const session = ++nearSession;
   refreshNear().then(async () => {
     // Routes through the nearby stops: drawn neutral; chips to pick one line.
-    if (session !== nearSession || !nearLast || !nearLast.stops.length) return;
+    if (session !== nearSession || !nearLast) return;
+    setNearStops(nearLast.stops); // map: only the stops within 200 m
+    if (!nearLast.stops.length) return;
     try {
       const patterns = await getStopsPatterns(nearLast.stops.map((s) => s.gtfsId));
       if (session !== nearSession) return;
