@@ -231,3 +231,12 @@ p { margin: 4px 0; }
   0% { box-shadow: 0 0 0 0 rgba(26,115,232,.6); }
   100% { box-shadow: 0 0 0 16px rgba(26,115,232,0); }
 }
+
+/* Popup when a stop is tapped on the map */
+.stop-popup { min-width: 200px; }
+.pop-deps { margin: 8px 0; display: grid; gap: 4px; }
+.pop-dep { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
+.pop-dep .headsign { flex: 1; min-width: 0; color: #333; }
+.pop-mins { font-weight: 700; font-variant-numeric: tabular-nums; color: #222; }
+.small-badge { min-width: 32px; padding: 2px 4px; font-size: 0.8rem; }
+.pop-btn { width: 100%; padding: 6px 10px; font-size: 0.9rem; }

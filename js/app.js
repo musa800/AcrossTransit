@@ -1,7 +1,7 @@
 // Screen: tabs, stop search, departures list. Wires everything together.
 
-import { searchStops, getStopDepartures } from "./peatus.js?v=4";
-import { initMap, showMap, hideMap, setStop, clearStop, centreOnMe } from "./map.js?v=4";
+import { searchStops, getStopDepartures, getTallinnStops } from "./peatus.js?v=5";
+import { initMap, showMap, hideMap, setStop, clearStop, centreOnMe, setStops, showStopPopup } from "./map.js?v=5";
 
 const DEPARTURES_REFRESH_MS = 30000;
 
@@ -99,15 +99,50 @@ function renderDepartures(deps) {
   $("updated").textContent = "Updated " + new Date().toLocaleTimeString("et-EE");
 }
 
-async function refreshDepartures(firstLoad = false) {
+// Small departures list shown in a popup when a stop is tapped on the map.
+function stopPopup(stop, deps) {
+  const now = Date.now() / 1000;
+  const el = document.createElement("div");
+  el.className = "stop-popup";
+  const title = document.createElement("strong");
+  title.textContent = stop.name;
+  el.appendChild(title);
+  const list = document.createElement("div");
+  list.className = "pop-deps";
+  for (const d of deps.slice(0, 5)) {
+    const mins = Math.round((d.time - now) / 60);
+    const mode = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"].includes(d.mode) ? d.mode : "OTHER";
+    const row = document.createElement("div");
+    row.className = "pop-dep";
+    row.innerHTML = `<span class="badge small-badge ${mode}"></span><span class="headsign"></span><span class="pop-mins"></span>`;
+    row.querySelector(".badge").textContent = d.line;
+    row.querySelector(".headsign").textContent = d.headsign;
+    row.querySelector(".pop-mins").textContent = mins <= 0 ? "now" : `${mins} min`;
+    list.appendChild(row);
+  }
+  if (!deps.length) list.textContent = "No upcoming departures.";
+  el.appendChild(list);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "pop-btn";
+  btn.textContent = "All departures";
+  btn.addEventListener("click", () => switchTab("stops"));
+  el.appendChild(btn);
+  return el;
+}
+
+async function refreshDepartures(firstLoad = false, fromMap = false) {
   if (!currentStop) return;
+  const stop = currentStop;
   try {
-    const { routes, departures } = await getStopDepartures(currentStop.gtfsId);
+    const { routes, departures } = await getStopDepartures(stop.gtfsId);
+    if (stop !== currentStop) return; // another stop was opened meanwhile
     renderDepartures(departures);
     if (firstLoad) {
-      setStop(currentStop, routes);
-      $("map-stop-name").textContent = currentStop.name;
+      setStop(stop, routes, !fromMap);
+      $("map-stop-name").textContent = stop.name;
       $("map-stop-chip").hidden = false;
+      if (fromMap) showStopPopup(stopPopup(stop, departures));
     }
     showMessage("");
   } catch (err) {
@@ -115,14 +150,14 @@ async function refreshDepartures(firstLoad = false) {
   }
 }
 
-function openStop(stop) {
+function openStop(stop, fromMap = false) {
   currentStop = stop;
   $("stop-name").textContent = stop.name;
   $("stop-meta").textContent = stopMeta(stop);
   $("stop-list").hidden = true;
   $("departures-panel").hidden = false;
   $("departures").innerHTML = `<li class="muted">Loading…</li>`;
-  refreshDepartures(true);
+  refreshDepartures(true, fromMap);
   clearInterval(depTimer);
   depTimer = setInterval(() => refreshDepartures(), DEPARTURES_REFRESH_MS);
 }
@@ -147,6 +182,15 @@ initMap($("map"), (text, isError) => {
   el.textContent = text;
   el.classList.toggle("error", isError);
 });
+
+// Load all Tallinn stops once; the map shows those within 2 km of its centre.
+getTallinnStops()
+  .then((stops) => setStops(stops, (stop) => openStop(stop, true)))
+  .catch((err) => {
+    const el = $("map-status");
+    el.textContent = "Couldn't load stops: " + err.message;
+    el.classList.add("error");
+  });
 
 $("centre-btn").addEventListener("click", () =>
   centreOnMe((msg) => {

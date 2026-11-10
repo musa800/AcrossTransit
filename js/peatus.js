@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=4";
+import { fetchChecked } from "./net.js?v=5";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -35,6 +35,19 @@ export async function searchStops(name) {
     { name }
   );
   return (data.stops || []).filter(inTallinn);
+}
+
+/** Every stop inside the Tallinn box (loaded once for the map). */
+export async function getTallinnStops() {
+  const data = await gql(
+    `query ($minLat: Float!, $minLon: Float!, $maxLat: Float!, $maxLon: Float!) {
+       stopsByBbox(minLat: $minLat, minLon: $minLon, maxLat: $maxLat, maxLon: $maxLon) {
+         gtfsId name code desc lat lon
+       }
+     }`,
+    TALLINN
+  );
+  return data.stopsByBbox || [];
 }
 
 /** Next departures at a stop, plus the lines (routes) that serve it. */
