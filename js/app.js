@@ -3,15 +3,16 @@
 
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
-  getStopLineDepartures, getStopLineSchedule, getNearbyDepartures,
-} from "./peatus.js?v=18";
+  getStopLineDepartures, getStopLineSchedule, getNearbyDepartures, getStopsPatterns,
+} from "./peatus.js?v=19";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, lineColor, setMode,
   initLocation, getMyPosition, getLocationError, showRoute, clearRoute,
-} from "./map.js?v=18";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=18";
-import { initRoutes, enterRoutes } from "./routes.js?v=18";
+  showNearRoutes, setNearFilter, clearNearRoutes,
+} from "./map.js?v=19";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=19";
+import { initRoutes, enterRoutes } from "./routes.js?v=19";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -474,6 +475,9 @@ let nearPos = null;   // fixed where the button was tapped (doesn't follow you)
 let nearTimer = null;
 let nearRun = 0;
 let nearLast = null;  // { stops, departures, at }
+let nearLines = [];   // [{ mode, shortName }] serving the nearby stops
+let nearLine = null;  // the chosen line, or null for all
+let nearSession = 0;  // changes each time the panel is opened or closed
 
 function nearDistance(m) {
   return `${Math.round(m / 10) * 10} m`;
@@ -484,7 +488,9 @@ function renderNear(stale) {
   list.innerHTML = "";
   const now = Date.now() / 1000;
   const { stops, departures, at } = nearLast;
-  const deps = stale ? departures.filter((d) => d.time >= now - 60) : departures;
+  let deps = stale ? departures.filter((d) => d.time >= now - 60) : departures;
+  if (nearLine) deps = deps.filter((d) => d.mode === nearLine.mode && d.line === nearLine.shortName);
+  deps = deps.slice(0, 20);
   const when = new Date(at).toLocaleTimeString("et-EE", { hour: "2-digit", minute: "2-digit" });
   const n = stops.length;
   $("near-note").textContent =
@@ -496,7 +502,9 @@ function renderNear(stale) {
     return;
   }
   if (!deps.length) {
-    list.innerHTML = `<li class="muted">No upcoming departures from these stops.</li>`;
+    list.innerHTML = nearLine
+      ? `<li class="muted">No upcoming departures of this line from these stops.</li>`
+      : `<li class="muted">No upcoming departures from these stops.</li>`;
     return;
   }
   for (const d of deps) {
@@ -545,6 +553,37 @@ async function refreshNear() {
   }
 }
 
+/** The line chips in the Near you panel (tap one to show only that line). */
+function renderNearChips() {
+  const box = $("near-lines");
+  box.innerHTML = "";
+  for (const r of nearLines) {
+    const isOn = nearLine && nearLine.mode === r.mode && nearLine.shortName === r.shortName;
+    const chip = makeBadge(r.shortName, r.mode, "chip-badge");
+    chip.setAttribute("role", "button");
+    chip.tabIndex = 0;
+    if (nearLine) chip.classList.add(isOn ? "on" : "faded");
+    chip.addEventListener("click", () => chooseNearLine(isOn ? null : r));
+    box.appendChild(chip);
+  }
+}
+
+function chooseNearLine(r) {
+  nearLine = r;
+  setNearFilter(r?.mode, r ? r.shortName : null);
+  renderNearChips();
+  $("near-departures").scrollTop = 0;
+  if (nearLast) renderNear(false);
+}
+
+/** Lines serving the nearby stops, from their routes and departures, sorted by number. */
+function collectNearLines(patterns) {
+  const seen = new Map();
+  for (const p of patterns) seen.set(`${p.mode}|${p.line}`, { mode: p.mode, shortName: p.line });
+  for (const d of nearLast?.departures || []) seen.set(`${d.mode}|${d.line}`, { mode: d.mode, shortName: d.line });
+  return [...seen.values()].sort((a, b) => String(a.shortName).localeCompare(String(b.shortName), "et", { numeric: true }));
+}
+
 function openNear() {
   const pos = getMyPosition();
   if (!pos) {
@@ -555,12 +594,28 @@ function openNear() {
   hideRouteBar();
   nearPos = pos;
   nearLast = null;
+  nearLine = null;
+  nearLines = [];
+  $("near-lines").innerHTML = "";
   $("near-note").textContent = pos.live ? "" : "Using your last known position.";
   $("near-departures").innerHTML = `<li class="muted">Loading…</li>`;
   $("near-departures").scrollTop = 0;
   $("near-sheet").hidden = false;
   if (activeTab === "map") updateLayout();
-  refreshNear();
+  const session = ++nearSession;
+  refreshNear().then(async () => {
+    // Routes through the nearby stops: drawn neutral; chips to pick one line.
+    if (session !== nearSession || !nearLast || !nearLast.stops.length) return;
+    try {
+      const patterns = await getStopsPatterns(nearLast.stops.map((s) => s.gtfsId));
+      if (session !== nearSession) return;
+      showNearRoutes(patterns);
+      nearLines = collectNearLines(patterns);
+      renderNearChips();
+    } catch (err) {
+      mapStatus("Couldn't load routes: " + err.message, true);
+    }
+  });
   clearInterval(nearTimer);
   nearTimer = setInterval(refreshNear, DEPARTURES_REFRESH_MS);
 }
@@ -568,8 +623,11 @@ function openNear() {
 function closeNear(layout = true) {
   if ($("near-sheet").hidden) return;
   nearPos = null;
+  nearLine = null;
   nearRun++;
+  nearSession++;
   clearInterval(nearTimer);
+  clearNearRoutes();
   $("near-sheet").hidden = true;
   if (layout && activeTab === "map") updateLayout();
 }

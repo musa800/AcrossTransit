@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=18";
+import { fetchChecked } from "./net.js?v=19";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -363,7 +363,47 @@ export async function getNearbyDepartures(pos, radius = 200, count = 20) {
     }
   }
   departures.sort((a, b) => a.time - b.time);
-  return { stops, departures: departures.slice(0, count) };
+  // All of them (up to `count` per stop): the screen shows the first 20,
+  // or the first 20 of one line when a line is chosen.
+  return { stops, departures };
+}
+
+/**
+ * The routes (patterns) through several stops, without duplicates:
+ * [{ code, line, mode, headsign, points, stops }].
+ */
+export async function getStopsPatterns(stopIds) {
+  if (!stopIds.length) return [];
+  const data = await gql(
+    `query ($ids: [String]) {
+       stops(ids: $ids) {
+         patterns {
+           code headsign
+           route { shortName mode }
+           patternGeometry { points }
+           stops { gtfsId name code desc lat lon }
+         }
+       }
+     }`,
+    { ids: stopIds }
+  );
+  const seen = new Map();
+  for (const st of data.stops || []) {
+    for (const p of st.patterns || []) {
+      if (seen.has(p.code)) continue;
+      const points = decodePolyline(p.patternGeometry?.points || "");
+      if (points.length < 2) continue;
+      seen.set(p.code, {
+        code: p.code,
+        line: p.route?.shortName || "?",
+        mode: p.route?.mode || "OTHER",
+        headsign: p.headsign || "",
+        points,
+        stops: p.stops || [],
+      });
+    }
+  }
+  return [...seen.values()];
 }
 
 // ---------- Routes ----------

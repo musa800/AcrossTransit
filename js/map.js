@@ -2,7 +2,7 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=18";
+import { getVehicles, lineKey } from "./vehicles.js?v=19";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -40,6 +40,12 @@ let selected = null;
 // A whole route opened from the Routes tab (stops mode, when no stop is chosen):
 // { key, color, layer, stops }
 let routeView = null;
+
+// Routes through the stops near you (stops mode, from the Near me panel):
+// { layer, patterns, colors: Map key->colour, filter: line key or null, routeStops }
+let nearView = null;
+let nearRenderer = null; // canvas: many neutral lines stay light to draw
+const NEUTRAL = "#7a8190";
 
 // The planner (plan mode).
 const plan = {
@@ -97,6 +103,7 @@ export function setMode(newMode) {
       selected.routeLayer.remove();
     }
     if (routeView) routeView.layer.remove();
+    if (nearView) nearView.layer.remove();
     plan.layer.addTo(map);
     plan.endpoints.addTo(map);
   } else {
@@ -107,6 +114,7 @@ export function setMode(newMode) {
       selected.routeLayer.addTo(map);
     }
     if (routeView) routeView.layer.addTo(map);
+    if (nearView) nearView.layer.addTo(map);
   }
   lastUpdate = "";
   render();
@@ -136,7 +144,10 @@ export function resizeMap() {
 
 /** The colour given to a line of the chosen stop, or "" if none. */
 export function lineColor(lineMode, line) {
-  return selected?.colors.get(lineKey(lineMode, line)) || "";
+  const key = lineKey(lineMode, line);
+  if (selected) return selected.colors.get(key) || "";
+  if (nearView && nearView.filter === key) return nearView.colors.get(key) || "";
+  return "";
 }
 
 // ---------- Drawing ----------
@@ -165,6 +176,10 @@ function updateStatus(hide) {
     return;
   }
   if (hide) onStatus("Zoom in to see stops", false);
+  else if (!selected && nearView) {
+    if (!nearView.filter) onStatus("Tap a line in the panel to see its buses", false);
+    else onStatus(lastUpdate ? `${vehicleMarkers.size} on this line · updated ${lastUpdate}` : "Loading buses…", false);
+  }
   else if (!selected && routeView) {
     onStatus(lastUpdate ? `${vehicleMarkers.size} on this route · updated ${lastUpdate}` : "Loading buses…", false);
   }
@@ -186,6 +201,10 @@ function vehicleFilter() {
   }
   if (!selected && routeView) {
     return { shows: (k) => k === routeView.key, color: () => routeView.color };
+  }
+  if (!selected && nearView) {
+    if (!nearView.filter) return null; // buses only once a line is chosen
+    return { shows: (k) => k === nearView.filter, color: (k) => nearView.colors.get(k) || "" };
   }
   if (!selected) return null;
   return {
@@ -328,12 +347,15 @@ function renderStops(hide) {
   // Small dots, no distance limit: a chosen stop's route stops, or a shown trip's stops.
   const tripView = mode === "plan" && plan.tripStops.length > 0;
   const wholeRoute = mode === "stops" && !selected && routeView;
-  const small = (mode === "stops" && selected) || tripView || wholeRoute;
+  const nearLine = mode === "stops" && !selected && nearView && nearView.filter;
+  const small = (mode === "stops" && selected) || tripView || wholeRoute || nearLine;
   if (!hide && !small) ensureCells(center);
   const source = tripView
     ? plan.tripStops
     : wholeRoute
       ? routeView.stops
+      : nearLine
+        ? [...nearView.routeStops.values()]
       : small
         ? [...selected.routeStops.values()].filter((s) => s.gtfsId !== selected.stop.gtfsId)
         : stopsById.values();
@@ -402,6 +424,7 @@ export function closeMapPopup() {
 export function setStop(stop, routes) {
   clearStop(false);
   clearRoute(false);
+  clearNearRoutes(false);
   const marker = L.marker([stop.lat, stop.lon], {
     icon: L.divIcon({ className: "", html: `<div class="stop-pin"></div>`, iconSize: [22, 22], iconAnchor: [11, 11] }),
     pane: "selectedPane",
@@ -482,6 +505,7 @@ export function clearStop(redraw = true) {
 export function showRoute(route, direction) {
   clearStop(false);
   clearRoute(false);
+  clearNearRoutes(false);
   routeView = {
     key: lineKey(route.mode, route.line),
     color: LINE_COLORS[0],
@@ -505,6 +529,56 @@ export function clearRoute(redraw = true) {
 
 export function hasRoute() {
   return !!routeView;
+}
+
+// ---------- Routes near you (from the Near me panel) ----------
+
+/** Draw all routes through the nearby stops in one neutral colour. */
+export function showNearRoutes(patterns) {
+  clearNearRoutes(false);
+  if (!nearRenderer) nearRenderer = L.canvas({ padding: 0.3 });
+  nearView = { layer: L.layerGroup(), patterns, colors: new Map(), filter: null, routeStops: new Map() };
+  for (const p of patterns) {
+    const key = lineKey(p.mode, p.line);
+    if (!nearView.colors.has(key)) {
+      nearView.colors.set(key, LINE_COLORS[nearView.colors.size % LINE_COLORS.length]);
+    }
+  }
+  if (mode === "stops") nearView.layer.addTo(map);
+  drawNear();
+}
+
+/** Show one line (mode + line number) in colour with its stops and buses, or all neutral with null. */
+export function setNearFilter(lineMode, line) {
+  if (!nearView) return;
+  nearView.filter = line == null ? null : lineKey(lineMode, line);
+  lastUpdate = "";
+  drawNear();
+  refresh();
+}
+
+function drawNear() {
+  nearView.layer.clearLayers();
+  nearView.routeStops.clear();
+  for (const p of nearView.patterns) {
+    const key = lineKey(p.mode, p.line);
+    if (nearView.filter && key !== nearView.filter) continue;
+    if (nearView.filter) {
+      drawLine(nearView.layer, p.points, nearView.colors.get(key),
+        `<strong>Line ${escapeHtml(p.line)}</strong><br>→ ${escapeHtml(p.headsign)}`);
+      for (const st of p.stops) nearView.routeStops.set(st.gtfsId, st);
+    } else {
+      L.polyline(p.points, { renderer: nearRenderer, color: NEUTRAL, weight: 3, opacity: 0.6, interactive: false })
+        .addTo(nearView.layer);
+    }
+  }
+  render();
+}
+
+export function clearNearRoutes(redraw = true) {
+  if (nearView) nearView.layer.remove();
+  nearView = null;
+  if (redraw) render();
 }
 
 // ---------- Planner (plan mode) ----------
