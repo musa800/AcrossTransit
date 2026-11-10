@@ -546,7 +546,6 @@ export function hasRoute() {
 
 // ---------- Routes near you (from the Near me panel) ----------
 
-/** Draw all routes through the nearby stops in one neutral colour. */
 /** Start the Near me view: only the stops within 200 m are shown. */
 export function setNearStops(stops) {
   clearStop(false);
