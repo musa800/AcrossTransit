@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=15";
-import { searchPlaces } from "./geocode.js?v=15";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=16";
+import { searchPlaces } from "./geocode.js?v=16";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=15";
-import { lineKey } from "./vehicles.js?v=15";
+} from "./map.js?v=16";
+import { lineKey } from "./vehicles.js?v=16";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -302,25 +302,66 @@ function leavesTallinn() {
 
 // Whether the server accepts the "banned operators" option (found out on first use).
 let bannedSupported = true;
+let citySearchedUntil = 0; // how far the last city-only search looked (Unix seconds)
 
-/**
- * Trips using only Tallinna Linnatransport. First asks the server to leave
- * other operators out; if it doesn't support that, asks for more trips and
- * keeps those that use TLT only. Either way, the result is checked.
- */
-async function planCityOnly(when, arriveBy) {
-  let trips = null;
+const CITY_WANTED = 3;          // stop searching once this many city-only trips are found
+const CITY_MAX_ROUNDS = 6;      // at most this many searches per plan
+const CITY_WINDOW_S = 3 * 3600; // look at most 3 hours past (or before) the chosen time
+
+function tltOnly(it) {
+  return it.legs.every((l) => !l.transit || isTlt(l.operator));
+}
+
+/** One search round: ask the server to leave other operators out if it can; otherwise ask for more trips. */
+async function cityRound(when, arriveBy) {
   if (bannedSupported) {
     try {
       const others = await getNonTltAgencyIds();
-      trips = await planTrip(ends.from, ends.to, when, arriveBy, { bannedAgencies: others.join(",") });
+      return await planTrip(ends.from, ends.to, when, arriveBy, { bannedAgencies: others.join(",") });
     } catch (err) {
       if (!/UnknownArgument|FieldUndefined|WrongType|banned/i.test(err.message)) throw err;
       bannedSupported = false;
     }
   }
-  if (!trips) trips = await planTrip(ends.from, ends.to, when, arriveBy, { count: 12 });
-  return trips.filter((it) => it.legs.every((l) => !l.transit || isTlt(l.operator))).slice(0, 5);
+  return planTrip(ends.from, ends.to, when, arriveBy, { count: 12 });
+}
+
+/**
+ * Trips using only Tallinna Linnatransport. City-only trips can be less
+ * frequent than mixed ones, so if the first search finds few, keep searching
+ * later departures (or earlier arrivals for "Arrive by"), up to 3 hours away.
+ * Returns { trips, searchedUntil } (Unix seconds).
+ */
+async function planCityOnly(when, arriveBy) {
+  const found = new Map(); // dedupe by start/end/lines
+  const startS = Math.floor(when.getTime() / 1000);
+  let cursor = new Date(when);
+  let searchedUntil = startS;
+
+  for (let round = 0; round < CITY_MAX_ROUNDS; round++) {
+    const trips = await cityRound(cursor, arriveBy);
+    if (!trips.length) break;
+    for (const it of trips.filter(tltOnly)) {
+      const key = `${it.start}|${it.end}|${it.legs.map((l) => l.line).join(",")}`;
+      found.set(key, it);
+    }
+    // Move the search time past the trips we've seen.
+    if (arriveBy) {
+      const earliestEnd = Math.min(...trips.map((t) => t.end));
+      searchedUntil = earliestEnd;
+      cursor = new Date((earliestEnd - 60) * 1000);
+      if (startS - earliestEnd > CITY_WINDOW_S) break;
+    } else {
+      const latestStart = Math.max(...trips.map((t) => t.start));
+      searchedUntil = latestStart;
+      cursor = new Date((latestStart + 60) * 1000);
+      if (latestStart - startS > CITY_WINDOW_S) break;
+    }
+    if (found.size >= CITY_WANTED) break;
+  }
+
+  const list = [...found.values()].sort((a, b) => (arriveBy ? b.end - a.end : a.start - b.start));
+  return { trips: list.slice(0, 5), searchedUntil };
 }
 
 async function runPlan() {
@@ -332,9 +373,15 @@ async function runPlan() {
   planMessage("Searching for trips…");
   const { when, arriveBy } = planTime();
   try {
-    const result = cityOnly()
-      ? await planCityOnly(when, arriveBy)
-      : await planTrip(ends.from, ends.to, when, arriveBy);
+    let result;
+    if (cityOnly()) {
+      planMessage("Searching for Tallinn city transport trips…");
+      const r = await planCityOnly(when, arriveBy);
+      result = r.trips;
+      citySearchedUntil = r.searchedUntil;
+    } else {
+      result = await planTrip(ends.from, ends.to, when, arriveBy);
+    }
     if (run !== planRun) return;
     itineraries = result;
     showList();
@@ -367,7 +414,8 @@ function showList() {
   }
   if (!itineraries.length) {
     if (cityOnly() && !leavesTallinn()) {
-      box.appendChild(cityOnlyHint("No trips with Tallinn city transport only."));
+      box.appendChild(cityOnlyHint(
+        `No Tallinn city transport trips found up to ${clock(citySearchedUntil)}.`));
     } else if (!cityOnly()) {
       box.appendChild(el("li", "muted", "No trips found for that time. Try another time or a nearby place."));
     }
@@ -389,6 +437,10 @@ function showList() {
     li.addEventListener("click", () => showDetails(i));
     box.appendChild(li);
   });
+  // City-only results first; then the option to see trips with other operators too.
+  if (cityOnly() && !leavesTallinn()) {
+    box.appendChild(cityOnlyHint("Only Tallinn city transport is shown. Other operators may have faster or more frequent trips."));
+  }
 }
 
 function showDetails(i) {
