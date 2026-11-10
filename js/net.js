@@ -12,7 +12,8 @@ async function diagnose(url, err) {
   } catch {
     probe = "server not reachable from this page";
   }
-  return new Error(`${err.name}: ${err.message} | ${probe}`);
+  const host = new URL(url).host;
+  return new Error(`${err.name}: ${err.message} | ${probe} | ${host}`);
 }
 
 export async function fetchChecked(url, options = {}) {
@@ -24,7 +25,7 @@ export async function fetchChecked(url, options = {}) {
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+    throw new Error(`HTTP ${res.status} from ${new URL(url).host}: ${text.slice(0, 200)}`);
   }
   return res;
 }
