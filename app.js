@@ -13,13 +13,38 @@ const $ = (id) => document.getElementById(id);
 let refreshTimer = null;
 let currentStop = null;
 
+// When a request fails before any answer arrives, find out why: send a
+// "no-cors" probe, which the browser lets through without letting us read
+// the answer. If the probe gets through, the server is reachable and the
+// browser blocked our real request (CORS). If the probe also fails, it's a
+// network problem or the page can't make requests at all.
+async function diagnose(err) {
+  const where = location.protocol === "file:" ? "opened as a local file" : `opened from ${location.host}`;
+  let probe;
+  try {
+    await fetch(API, { method: "POST", mode: "no-cors", body: "{}" });
+    probe = "server reachable → browser blocked the request (CORS)";
+  } catch (e) {
+    probe = "server not reachable from this page (network, or the page can't make requests)";
+  }
+  return new Error(`${err.name}: ${err.message} | ${probe} | page ${where}`);
+}
+
 async function gql(query, variables = {}) {
-  const res = await fetch(API, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, variables }),
-  });
-  if (!res.ok) throw new Error(`API error ${res.status}`);
+  let res;
+  try {
+    res = await fetch(API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, variables }),
+    });
+  } catch (err) {
+    throw await diagnose(err);
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API error ${res.status}: ${text.slice(0, 200)}`);
+  }
   const json = await res.json();
   if (json.errors) throw new Error(json.errors.map((e) => e.message).join("; "));
   return json.data;
