@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip } from "./peatus.js?v=10";
-import { searchPlaces } from "./geocode.js?v=10";
+import { searchStops, planTrip } from "./peatus.js?v=11";
+import { searchPlaces } from "./geocode.js?v=11";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs,
-} from "./map.js?v=10";
-import { lineKey } from "./vehicles.js?v=10";
+} from "./map.js?v=11";
+import { lineKey } from "./vehicles.js?v=11";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);

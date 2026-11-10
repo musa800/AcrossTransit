@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=10";
+import { fetchChecked } from "./net.js?v=11";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -221,8 +221,9 @@ export async function planTrip(from, to, when, arriveBy = false) {
          itineraries {
            startTime endTime duration walkDistance
            legs {
-             mode transitLeg startTime endTime distance duration headsign
+             mode startTime endTime distance duration
              route { shortName mode }
+             trip { tripHeadsign }
              from { name lat lon }
              to { name lat lon }
              intermediateStops { name }
@@ -245,10 +246,10 @@ export async function planTrip(from, to, when, arriveBy = false) {
     duration: it.duration,
     walkDistance: it.walkDistance || 0,
     legs: (it.legs || []).map((l) => ({
-      transit: !!l.transitLeg,
+      transit: !!l.route && !["WALK", "BICYCLE", "CAR"].includes(l.mode),
       mode: l.route?.mode || l.mode,
       line: l.route?.shortName || "",
-      headsign: l.headsign || "",
+      headsign: l.trip?.tripHeadsign || "",
       start: Math.round(l.startTime / 1000),
       end: Math.round(l.endTime / 1000),
       distance: l.distance || 0,
