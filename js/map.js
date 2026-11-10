@@ -2,7 +2,7 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=11";
+import { getVehicles, lineKey } from "./vehicles.js?v=12";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -21,7 +21,13 @@ const vehicleMarkers = new Map(); // vehicle id -> marker
 let lastVehicles = [];
 let lastUpdate = "";
 
-let allStops = [];
+// Stops are loaded on demand in small squares ("cells") around the map centre,
+// only while the map is less than 25 km wide, and each cell only once.
+const CELL_LAT = 0.02;  // ≈ 2.2 km
+const CELL_LON = 0.04;  // ≈ 2.3 km at Estonian latitudes
+const cells = new Map();     // "i:j" -> "loading" | "done"
+const stopsById = new Map(); // every stop loaded so far
+let stopLoader = null;       // async (box) => stops
 const stopDots = new Map(); // stop id -> circle marker
 let onStopTap = () => {};
 let onPlanTap = () => {};
@@ -244,11 +250,51 @@ function renderVehicles(hide) {
 
 // ---------- Stops ----------
 
-/** Give the map the full list of stops. */
-export function setStops(stops, stopTapCallback) {
-  allStops = stops;
+/**
+ * Tell the map how to load stops for an area (loader: async box => stops)
+ * and what to do when a stop is tapped.
+ */
+export function setStopSource(loader, stopTapCallback) {
+  stopLoader = loader;
   onStopTap = stopTapCallback;
   render();
+}
+
+/** The map centre as { lat, lon }. */
+export function getCenter() {
+  const c = map.getCenter();
+  return { lat: c.lat, lon: c.lng };
+}
+
+/** Load any not-yet-loaded cells that touch the 2 km circle around the centre. */
+function ensureCells(center) {
+  if (!stopLoader) return;
+  const dLat = STOP_RADIUS_M / 111320;
+  const dLon = STOP_RADIUS_M / (111320 * Math.cos((center.lat * Math.PI) / 180));
+  const i0 = Math.floor((center.lat - dLat) / CELL_LAT);
+  const i1 = Math.floor((center.lat + dLat) / CELL_LAT);
+  const j0 = Math.floor((center.lng - dLon) / CELL_LON);
+  const j1 = Math.floor((center.lng + dLon) / CELL_LON);
+  for (let i = i0; i <= i1; i++) {
+    for (let j = j0; j <= j1; j++) {
+      const key = `${i}:${j}`;
+      if (cells.has(key)) continue;
+      cells.set(key, "loading");
+      const box = {
+        minLat: i * CELL_LAT,
+        maxLat: (i + 1) * CELL_LAT,
+        minLon: j * CELL_LON,
+        maxLon: (j + 1) * CELL_LON,
+      };
+      stopLoader(box)
+        .then((stops) => {
+          for (const s of stops) stopsById.set(s.gtfsId, s);
+          cells.set(key, "done");
+          render();
+        })
+        .catch(() => cells.delete(key)); // try again next time the map moves here
+    }
+  }
 }
 
 /** What to do when the map (or a stop) is tapped in plan mode: cb(latlng, stopOrNull). */
@@ -262,9 +308,10 @@ function renderStops(hide) {
   // Stop chosen (stops mode): every stop along its routes, small, no distance limit.
   // Otherwise: all stops within 2 km of the centre, normal size.
   const routeView = mode === "stops" && selected;
+  if (!hide && !routeView) ensureCells(center);
   const source = routeView
     ? [...selected.routeStops.values()].filter((s) => s.gtfsId !== selected.stop.gtfsId)
-    : allStops;
+    : stopsById.values();
   if (!hide) {
     for (const s of source) {
       if (!routeView && map.distance(center, [s.lat, s.lon]) > STOP_RADIUS_M) continue;

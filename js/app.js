@@ -2,14 +2,14 @@
 // Wires everything together.
 
 import {
-  searchStops, getStopDepartures, getTallinnStops, getStopPatterns,
+  searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule,
-} from "./peatus.js?v=11";
+} from "./peatus.js?v=12";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
-  setStops, showStopRoutes, setLineFilter, lineColor, setMode,
-} from "./map.js?v=11";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=11";
+  setStopSource, getCenter, showStopRoutes, setLineFilter, lineColor, setMode,
+} from "./map.js?v=12";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=12";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -69,14 +69,26 @@ for (const btn of document.querySelectorAll(".tab-btn")) {
 
 // ---------- Stop search ----------
 
-function stopMeta(stop) {
-  return [stop.desc, stop.code ? `code ${stop.code}` : ""].filter(Boolean).join(" · ");
+const MAX_SEARCH_RESULTS = 30;
+
+function formatDistance(m) {
+  if (m < 1000) return `${Math.round(m / 10) * 10} m`;
+  if (m < 10000) return `${(m / 1000).toFixed(1)} km`;
+  return `${Math.round(m / 1000)} km`;
 }
 
+function stopMeta(stop) {
+  return [
+    stop.desc,
+    stop.code ? `code ${stop.code}` : "",
+    stop.distance != null ? formatDistance(stop.distance) : "",
+  ].filter(Boolean).join(" · ");
+}
+
+/** Stops are already sorted nearest first (from the map centre). */
 function renderStops(stops) {
   const list = $("stops");
   list.innerHTML = "";
-  stops.sort((a, b) => a.name.localeCompare(b.name, "et"));
   for (const stop of stops) {
     const li = document.createElement("li");
     li.innerHTML = `<strong></strong><p class="muted small"></p>`;
@@ -96,9 +108,9 @@ $("search-form").addEventListener("submit", async (e) => {
   closeStop();
   showMessage("Searching…");
   try {
-    const stops = await searchStops(name);
+    const stops = (await searchStops(name, getCenter())).slice(0, MAX_SEARCH_RESULTS);
     renderStops(stops);
-    showMessage(stops.length ? "" : "No stops in Tallinn match that name.");
+    showMessage(stops.length ? "" : "No stops match that name.");
   } catch (err) {
     $("stop-list").hidden = true;
     showMessage("Search failed: " + err.message);
@@ -410,10 +422,8 @@ initPlanner(() => {
   if (activeTab === "plan") updateLayout();
 });
 
-// Load all Tallinn stops once; the map shows those within 2 km of its centre.
-getTallinnStops()
-  .then((stops) => setStops(stops, openStop))
-  .catch((err) => mapStatus("Couldn't load stops: " + err.message, true));
+// The map loads stops itself, a small area at a time, only when zoomed in.
+setStopSource(getStopsInBox, openStop);
 
 $("centre-btn").addEventListener("click", () => centreOnMe((msg) => mapStatus(msg, true)));
 

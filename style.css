@@ -424,3 +424,27 @@ p { margin: 4px 0; }
 .step-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .step .small-badge { min-width: 32px; flex: none; }
 .step.transfer { background: transparent; border-style: dashed; padding: 6px 10px; }
+
+/* City-transport-only switch */
+.plan-toggle {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.plan-toggle input { width: 18px; height: 18px; flex: none; margin: 0; }
+
+/* Hint with a button, in the trip list */
+.hint {
+  display: grid;
+  gap: 8px;
+  background: #fff6db;
+  border-color: #f0d68a;
+  color: #5c4500;
+}
+.hint button { justify-self: start; padding: 6px 12px; font-size: 0.85rem; }
+@media (prefers-color-scheme: dark) {
+  .hint { background: #3a3215; border-color: #6b5a1d; color: #f1dc9a; }
+}

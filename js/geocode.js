@@ -2,15 +2,18 @@
 // Free to use, with a limit of about one request per second; this module
 // waits between requests so the app stays within it.
 
-import { fetchChecked } from "./net.js?v=11";
-import { TALLINN } from "./peatus.js?v=11";
+import { fetchChecked } from "./net.js?v=12";
+import { distanceM } from "./peatus.js?v=12";
 
 const URL_BASE = "https://nominatim.openstreetmap.org/search";
 const MIN_GAP_MS = 1100;
 let lastRequest = 0;
 
-/** Places in Tallinn matching the text: [{ name, detail, lat, lon }]. */
-export async function searchPlaces(text) {
+/**
+ * Places in Estonia matching the text: [{ name, detail, lat, lon, distance }].
+ * near ({ lat, lon }): results around it are preferred, and distance is filled in.
+ */
+export async function searchPlaces(text, near) {
   const wait = lastRequest + MIN_GAP_MS - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   lastRequest = Date.now();
@@ -19,8 +22,10 @@ export async function searchPlaces(text) {
     q: text,
     format: "jsonv2",
     limit: "6",
-    bounded: "1",
-    viewbox: `${TALLINN.minLon},${TALLINN.maxLat},${TALLINN.maxLon},${TALLINN.minLat}`,
+    countrycodes: "ee",
+    // Prefer (but don't require) places around the map's current area.
+    viewbox: `${near.lon - 0.3},${near.lat + 0.15},${near.lon + 0.3},${near.lat - 0.15}`,
+    bounded: "0",
     "accept-language": "et,en",
     addressdetails: "1",
   });
@@ -30,9 +35,11 @@ export async function searchPlaces(text) {
     const a = it.address || {};
     const street = [a.road, a.house_number].filter(Boolean).join(" ");
     const name = it.name || street || it.display_name.split(",")[0];
-    const detail = [street !== name ? street : "", a.suburb || a.city_district || a.neighbourhood || ""]
-      .filter(Boolean)
-      .join(", ");
-    return { name, detail, lat: Number(it.lat), lon: Number(it.lon) };
+    const town = a.city || a.town || a.village || a.municipality || "";
+    const area = a.suburb || a.city_district || a.neighbourhood || "";
+    const detail = [street !== name ? street : "", area, town].filter(Boolean).join(", ");
+    const lat = Number(it.lat);
+    const lon = Number(it.lon);
+    return { name, detail, lat, lon, distance: distanceM(near, { lat, lon }) };
   });
 }

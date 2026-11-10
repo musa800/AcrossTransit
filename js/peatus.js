@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=11";
+import { fetchChecked } from "./net.js?v=12";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -27,27 +27,66 @@ function inTallinn(s) {
 }
 
 /** Stops in Tallinn whose name matches. */
-export async function searchStops(name) {
+/** Distance in metres between two { lat, lon } points. */
+export function distanceM(a, b) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+/**
+ * Stops anywhere in Estonia whose name matches.
+ * near ({ lat, lon }, optional): adds `distance` (metres) and sorts nearest first.
+ */
+export async function searchStops(name, near = null) {
   const data = await gql(
     `query ($name: String!) {
        stops(name: $name) { gtfsId name code desc lat lon }
      }`,
     { name }
   );
-  return (data.stops || []).filter(inTallinn);
+  const stops = data.stops || [];
+  if (near) {
+    for (const s of stops) s.distance = distanceM(near, s);
+    stops.sort((a, b) => a.distance - b.distance);
+  }
+  return stops;
+}
+
+export function inTallinnArea(p) {
+  return inTallinn(p);
 }
 
 /** Every stop inside the Tallinn box (loaded once for the map). */
-export async function getTallinnStops() {
+/** Stops inside a box { minLat, minLon, maxLat, maxLon } (anywhere in Estonia). */
+export async function getStopsInBox(box) {
   const data = await gql(
     `query ($minLat: Float!, $minLon: Float!, $maxLat: Float!, $maxLon: Float!) {
        stopsByBbox(minLat: $minLat, minLon: $minLon, maxLat: $maxLat, maxLon: $maxLon) {
          gtfsId name code desc lat lon
        }
      }`,
-    TALLINN
+    box
   );
   return data.stopsByBbox || [];
+}
+
+let tltAgencyPromise = null;
+
+/** The id of Tallinna Linnatransport in the national data (looked up once). */
+export function getTltAgencyId() {
+  if (!tltAgencyPromise) {
+    tltAgencyPromise = gql(`{ agencies { gtfsId name } }`).then((data) => {
+      const tlt = (data.agencies || []).find((a) => /tallinna linnatransport/i.test(a.name));
+      if (!tlt) throw new Error("Tallinna Linnatransport not found in the timetable data");
+      return tlt.gtfsId;
+    });
+    tltAgencyPromise.catch(() => (tltAgencyPromise = null)); // allow a retry later
+  }
+  return tltAgencyPromise;
 }
 
 /** Next departures at a stop, plus the lines (routes) that serve it. */
@@ -208,21 +247,23 @@ export function decodePolyline(str) {
  * from/to: { lat, lon }; when: JS Date; arriveBy: true = arrive by `when`.
  * Returns itineraries: [{ start, end, duration, walkDistance, legs: [...] }]
  * with times in Unix seconds. Each leg:
- *   { transit, mode, line, headsign, start, end, distance, duration,
+ *   { transit, mode, line, headsign, operator, start, end, distance, duration,
  *     from: {name, lat, lon}, to: {name, lat, lon}, stops, points }
  */
-export async function planTrip(from, to, when, arriveBy = false) {
+export async function planTrip(from, to, when, arriveBy = false, onlyAgency = null) {
   const pad = (n) => String(n).padStart(2, "0");
   const date = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
   const time = `${pad(when.getHours())}:${pad(when.getMinutes())}:00`;
   const data = await gql(
-    `query ($from: InputCoordinates!, $to: InputCoordinates!, $date: String!, $time: String!, $arriveBy: Boolean!) {
-       plan(from: $from, to: $to, date: $date, time: $time, arriveBy: $arriveBy, numItineraries: 5) {
+    `query ($from: InputCoordinates!, $to: InputCoordinates!, $date: String!, $time: String!,
+            $arriveBy: Boolean!, $whiteListed: InputFilters) {
+       plan(from: $from, to: $to, date: $date, time: $time, arriveBy: $arriveBy,
+            numItineraries: 5, whiteListed: $whiteListed) {
          itineraries {
            startTime endTime duration walkDistance
            legs {
              mode startTime endTime distance duration
-             route { shortName mode }
+             route { shortName mode agency { name } }
              trip { tripHeadsign }
              from { name lat lon }
              to { name lat lon }
@@ -238,6 +279,7 @@ export async function planTrip(from, to, when, arriveBy = false) {
       date,
       time,
       arriveBy,
+      whiteListed: onlyAgency ? { agencies: onlyAgency } : null,
     }
   );
   return (data.plan?.itineraries || []).map((it) => ({
@@ -250,6 +292,7 @@ export async function planTrip(from, to, when, arriveBy = false) {
       mode: l.route?.mode || l.mode,
       line: l.route?.shortName || "",
       headsign: l.trip?.tripHeadsign || "",
+      operator: l.route?.agency?.name || "",
       start: Math.round(l.startTime / 1000),
       end: Math.round(l.endTime / 1000),
       distance: l.distance || 0,

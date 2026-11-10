@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Tallinn Transit</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="style.css?v=11">
+  <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
   <!-- Stops tab -->
@@ -77,6 +77,10 @@
         </select>
         <input id="plan-time" type="datetime-local" hidden>
       </div>
+      <label class="plan-toggle">
+        <input id="plan-city-only" type="checkbox">
+        <span>Tallinn city transport only</span>
+      </label>
       <ul id="plan-suggest" class="suggest" hidden></ul>
     </div>
 
@@ -116,6 +120,6 @@
   </nav>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script type="module" src="js/app.js?v=11"></script>
+  <script type="module" src="js/app.js?v=12"></script>
 </body>
 </html>

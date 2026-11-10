@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip } from "./peatus.js?v=11";
-import { searchPlaces } from "./geocode.js?v=11";
+import { searchStops, planTrip, getTltAgencyId, inTallinnArea } from "./peatus.js?v=12";
+import { searchPlaces } from "./geocode.js?v=12";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
-  fitPoints, showItinerary, clearItinerary, colorsForLegs,
-} from "./map.js?v=11";
-import { lineKey } from "./vehicles.js?v=11";
+  fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
+} from "./map.js?v=12";
+import { lineKey } from "./vehicles.js?v=12";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -28,7 +28,9 @@ function minutes(seconds) {
 }
 
 function metres(m) {
-  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m / 10) * 10} m`;
+  if (m < 1000) return `${Math.round(m / 10) * 10} m`;
+  if (m < 10000) return `${(m / 1000).toFixed(1)} km`;
+  return `${Math.round(m / 1000)} km`;
 }
 
 function modeName(mode) {
@@ -173,20 +175,23 @@ function onFieldInput(which) {
   const run = ++searchRun;
   // Wait until typing pauses, then search stops and places together.
   searchTimer = setTimeout(async () => {
+    const near = getCenter();
     const [stops, places] = await Promise.all([
-      searchStops(text).catch(() => []),
-      searchPlaces(text).catch(() => []),
+      searchStops(text, near).catch(() => []),
+      searchPlaces(text, near).catch(() => []),
     ]);
     if (run !== searchRun || activeField !== which) return;
     const items = [myLocationItem(which)];
     const seen = new Set();
     for (const s of stops) {
-      if (seen.has(s.name)) continue; // one entry per stop name (both sides of the street)
-      seen.add(s.name);
+      // One entry per stop name per place (both sides of the street are ~0.01° apart at most).
+      const key = `${s.name}|${s.lat.toFixed(2)}|${s.lon.toFixed(2)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       items.push({
         icon: "🚏",
         name: s.name,
-        detail: "Stop",
+        detail: `Stop · ${metres(s.distance)}`,
         pick: () => {
           closeSuggest();
           setEnd(which, { name: s.name, lat: s.lat, lon: s.lon });
@@ -198,14 +203,14 @@ function onFieldInput(which) {
       items.push({
         icon: "📍",
         name: p.name,
-        detail: p.detail,
+        detail: [p.detail, metres(p.distance)].filter(Boolean).join(" · "),
         pick: () => {
           closeSuggest();
           setEnd(which, { name: p.name, lat: p.lat, lon: p.lon });
         },
       });
     }
-    if (items.length === 1) items.push({ icon: "", name: "No matches in Tallinn", kind: "muted" });
+    if (items.length === 1) items.push({ icon: "", name: "No matches", kind: "muted" });
     suggest(items);
   }, 500);
 }
@@ -235,6 +240,50 @@ function planMessage(text) {
   box.appendChild(el("li", "muted", text));
 }
 
+// "Tallinn city transport only": off by default, remembered on this device.
+const CITY_ONLY_KEY = "acrosstransit.cityOnly";
+
+function loadCityOnly() {
+  try {
+    return localStorage.getItem(CITY_ONLY_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveCityOnly(on) {
+  try {
+    localStorage.setItem(CITY_ONLY_KEY, on ? "1" : "0");
+  } catch {
+    /* storage unavailable: the choice just isn't remembered */
+  }
+}
+
+function cityOnly() {
+  return $("plan-city-only").checked;
+}
+
+function setCityOnly(on) {
+  $("plan-city-only").checked = on;
+  saveCityOnly(on);
+  runPlan();
+}
+
+/** A hint row with a button to turn the city-only filter off. */
+function cityOnlyHint(text) {
+  const li = el("li", "hint");
+  li.appendChild(el("span", "", text));
+  const b = el("button", "", "Turn off and search again");
+  b.type = "button";
+  b.addEventListener("click", () => setCityOnly(false));
+  li.appendChild(b);
+  return li;
+}
+
+function leavesTallinn() {
+  return !inTallinnArea(ends.from) || !inTallinnArea(ends.to);
+}
+
 async function runPlan() {
   if (!ends.from || !ends.to) {
     hideSheet();
@@ -244,7 +293,8 @@ async function runPlan() {
   planMessage("Searching for trips…");
   const { when, arriveBy } = planTime();
   try {
-    const result = await planTrip(ends.from, ends.to, when, arriveBy);
+    const onlyAgency = cityOnly() ? await getTltAgencyId() : null;
+    const result = await planTrip(ends.from, ends.to, when, arriveBy, onlyAgency);
     if (run !== planRun) return;
     itineraries = result;
     showList();
@@ -272,8 +322,15 @@ function showList() {
   const box = $("plan-content");
   box.innerHTML = "";
   box.scrollTop = 0;
+  if (cityOnly() && leavesTallinn()) {
+    box.appendChild(cityOnlyHint("This trip starts or ends outside Tallinn, but only Tallinn city transport is allowed."));
+  }
   if (!itineraries.length) {
-    box.appendChild(el("li", "muted", "No trips found for that time. Try another time or nearby place."));
+    if (cityOnly() && !leavesTallinn()) {
+      box.appendChild(cityOnlyHint("No trips with Tallinn city transport only."));
+    } else if (!cityOnly()) {
+      box.appendChild(el("li", "muted", "No trips found for that time. Try another time or a nearby place."));
+    }
     return;
   }
   itineraries.forEach((it, i) => {
@@ -328,7 +385,8 @@ function showDetails(i) {
       t.appendChild(el("strong", "", `${modeName(l.mode)} ${l.line}${l.headsign ? ` → ${l.headsign}` : ""}`));
       t.appendChild(el("span", "", `${clock(l.start)} ${l.from.name}`));
       t.appendChild(el("span", "", `${clock(l.end)} ${l.to.name} (get off)`));
-      t.appendChild(el("span", "muted small", `${l.stops} ${l.stops === 1 ? "stop" : "stops"} · ${minutes(l.duration)} min`));
+      t.appendChild(el("span", "muted small",
+        [`${l.stops} ${l.stops === 1 ? "stop" : "stops"}`, `${minutes(l.duration)} min`, l.operator].filter(Boolean).join(" · ")));
       li.appendChild(t);
     }
     box.appendChild(li);
@@ -387,6 +445,9 @@ export function initPlanner(layoutCallback) {
     runPlan();
   });
   $("plan-time").addEventListener("change", runPlan);
+
+  $("plan-city-only").checked = loadCityOnly();
+  $("plan-city-only").addEventListener("change", () => setCityOnly(cityOnly()));
 
   $("plan-back").addEventListener("click", showList);
   $("plan-close").addEventListener("click", () => {
