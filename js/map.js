@@ -2,7 +2,7 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=17";
+import { getVehicles, lineKey } from "./vehicles.js?v=18";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -36,6 +36,10 @@ let onPlanTap = () => {};
 // { stop, marker, lines: Set of line keys, colors: Map key->colour, routeLayer,
 //   patterns: routes through it, lineFilter: one line key or null, routeStops: Map id->stop }
 let selected = null;
+
+// A whole route opened from the Routes tab (stops mode, when no stop is chosen):
+// { key, color, layer, stops }
+let routeView = null;
 
 // The planner (plan mode).
 const plan = {
@@ -92,6 +96,7 @@ export function setMode(newMode) {
       selected.marker.remove();
       selected.routeLayer.remove();
     }
+    if (routeView) routeView.layer.remove();
     plan.layer.addTo(map);
     plan.endpoints.addTo(map);
   } else {
@@ -101,6 +106,7 @@ export function setMode(newMode) {
       selected.marker.addTo(map);
       selected.routeLayer.addTo(map);
     }
+    if (routeView) routeView.layer.addTo(map);
   }
   lastUpdate = "";
   render();
@@ -159,6 +165,9 @@ function updateStatus(hide) {
     return;
   }
   if (hide) onStatus("Zoom in to see stops", false);
+  else if (!selected && routeView) {
+    onStatus(lastUpdate ? `${vehicleMarkers.size} on this route · updated ${lastUpdate}` : "Loading buses…", false);
+  }
   else if (!selected) onStatus("Tap a stop to see its buses", false);
   else if (!lastUpdate) onStatus("Loading buses…", false);
   else {
@@ -174,6 +183,9 @@ function vehicleFilter() {
   if (mode === "plan") {
     if (!plan.lines.size) return null;
     return { shows: (k) => plan.lines.has(k), color: (k) => plan.colors.get(k) || "" };
+  }
+  if (!selected && routeView) {
+    return { shows: (k) => k === routeView.key, color: () => routeView.color };
   }
   if (!selected) return null;
   return {
@@ -315,32 +327,35 @@ function renderStops(hide) {
   // Otherwise: all stops within 2 km of the centre, normal size.
   // Small dots, no distance limit: a chosen stop's route stops, or a shown trip's stops.
   const tripView = mode === "plan" && plan.tripStops.length > 0;
-  const routeView = (mode === "stops" && selected) || tripView;
-  if (!hide && !routeView) ensureCells(center);
+  const wholeRoute = mode === "stops" && !selected && routeView;
+  const small = (mode === "stops" && selected) || tripView || wholeRoute;
+  if (!hide && !small) ensureCells(center);
   const source = tripView
     ? plan.tripStops
-    : routeView
-      ? [...selected.routeStops.values()].filter((s) => s.gtfsId !== selected.stop.gtfsId)
-      : stopsById.values();
+    : wholeRoute
+      ? routeView.stops
+      : small
+        ? [...selected.routeStops.values()].filter((s) => s.gtfsId !== selected.stop.gtfsId)
+        : stopsById.values();
   if (!hide) {
     for (const s of source) {
-      if (!routeView && map.distance(center, [s.lat, s.lon]) > STOP_RADIUS_M) continue;
+      if (!small && map.distance(center, [s.lat, s.lon]) > STOP_RADIUS_M) continue;
       keep.add(s.gtfsId);
       const existing = stopDots.get(s.gtfsId);
-      if (existing && existing._small === !!routeView) continue;
+      if (existing && existing._small === !!small) continue;
       if (existing) existing.remove();
       const dot = L.circleMarker([s.lat, s.lon], {
         renderer: stopRenderer,
         pane: "stopsPane",
         interactive: false,
-        radius: routeView ? 4 : 6,
+        radius: small ? 4 : 6,
         color: "#ffffff",
-        weight: routeView ? 1.5 : 2,
+        weight: small ? 1.5 : 2,
         fillColor: "#3a3f47",
         fillOpacity: 1,
       }).addTo(map);
       dot._stop = s;
-      dot._small = !!routeView;
+      dot._small = !!small;
       stopDots.set(s.gtfsId, dot);
     }
   }
@@ -386,6 +401,7 @@ export function closeMapPopup() {
 /** Choose a stop: mark it and show buses on its lines (routes: [{mode, shortName}]). */
 export function setStop(stop, routes) {
   clearStop(false);
+  clearRoute(false);
   const marker = L.marker([stop.lat, stop.lon], {
     icon: L.divIcon({ className: "", html: `<div class="stop-pin"></div>`, iconSize: [22, 22], iconAnchor: [11, 11] }),
     pane: "selectedPane",
@@ -455,6 +471,40 @@ export function clearStop(redraw = true) {
   }
   selected = null;
   if (redraw) render();
+}
+
+// ---------- A whole route (from the Routes tab) ----------
+
+/**
+ * Show one direction of a route: its shape, its stops and its live buses.
+ * route: { mode, line }, direction: { points, stops }.
+ */
+export function showRoute(route, direction) {
+  clearStop(false);
+  clearRoute(false);
+  routeView = {
+    key: lineKey(route.mode, route.line),
+    color: LINE_COLORS[0],
+    layer: L.layerGroup(),
+    stops: direction.stops,
+  };
+  drawLine(routeView.layer, direction.points, routeView.color, null);
+  if (mode === "stops") routeView.layer.addTo(map);
+  const pts = direction.points.length ? direction.points : direction.stops.map((s) => [s.lat, s.lon]);
+  if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [30, 30] });
+  lastUpdate = "";
+  render();
+  refresh();
+}
+
+export function clearRoute(redraw = true) {
+  if (routeView) routeView.layer.remove();
+  routeView = null;
+  if (redraw) render();
+}
+
+export function hasRoute() {
+  return !!routeView;
 }
 
 // ---------- Planner (plan mode) ----------
@@ -554,39 +604,130 @@ function drawLine(layer, points, color, popupHtml) {
 }
 
 // ---------- My position ----------
+//
+// While the app is open (and visible), the position is watched continuously.
+// The map is centred on you once, on the first fix after opening, unless you
+// have already dragged the map. Blue pulsing dot = live; grey dot = last known
+// position (no update for a minute, or location unavailable); no dot if the
+// position has never been known. The last position is remembered on this
+// device so the grey dot can show straight away next time.
 
+const LAST_POS_KEY = "acrosstransit.lastPos";
+const STALE_MS = 60000;
+
+let lastFixAt = 0;
+let centredOnce = false;
+let userDragged = false;
+let locationError = "";
+
+function loadLastPos() {
+  try {
+    const p = JSON.parse(localStorage.getItem(LAST_POS_KEY) || "null");
+    return p && typeof p.lat === "number" ? [p.lat, p.lon] : null;
+  } catch {
+    return null;
+  }
+}
+
+let lastSaved = 0;
+function saveLastPos(pos) {
+  if (Date.now() - lastSaved < 30000) return;
+  lastSaved = Date.now();
+  try {
+    localStorage.setItem(LAST_POS_KEY, JSON.stringify({ lat: pos[0], lon: pos[1] }));
+  } catch {
+    /* not critical */
+  }
+}
+
+function isLive() {
+  return !!myPos && Date.now() - lastFixAt < STALE_MS;
+}
+
+function drawMe() {
+  if (!myPos) {
+    if (meMarker) meMarker.remove();
+    meMarker = null;
+    return;
+  }
+  const cls = isLive() ? "me" : "me grey";
+  if (!meMarker) {
+    meMarker = L.marker(myPos, {
+      icon: L.divIcon({ className: "", html: `<div class="${cls}"></div>`, iconSize: [20, 20], iconAnchor: [10, 10] }),
+      zIndexOffset: 3000,
+      interactive: false,
+    }).addTo(map);
+  } else {
+    meMarker.setLatLng(myPos);
+    const el = meMarker.getElement()?.firstChild;
+    if (el) el.className = cls;
+  }
+}
+
+function startWatching() {
+  if (!navigator.geolocation || watchId !== null) return;
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      myPos = [pos.coords.latitude, pos.coords.longitude];
+      lastFixAt = Date.now();
+      locationError = "";
+      saveLastPos(myPos);
+      drawMe();
+      if (!centredOnce) {
+        centredOnce = true;
+        if (!userDragged) map.setView(myPos, Math.max(map.getZoom(), 16));
+      }
+    },
+    (err) => {
+      locationError = err.code === 1 ? "Location permission was denied." : "Couldn't get your location.";
+      if (err.code === 1) stopWatching();
+      drawMe(); // turns grey (or stays hidden)
+    },
+    { enableHighAccuracy: true, maximumAge: 10000 }
+  );
+}
+
+function stopWatching() {
+  if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  watchId = null;
+}
+
+/** Start following the position; pauses while the app is in the background. */
+export function initLocation() {
+  const last = loadLastPos();
+  if (last) {
+    myPos = last; // grey until a live fix arrives
+    map.setView(last, 16, { animate: false });
+    drawMe();
+  }
+  map.on("dragstart", () => (userDragged = true));
+  startWatching();
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopWatching();
+    else startWatching();
+  });
+  // Turn the dot grey when updates stop.
+  setInterval(drawMe, 15000);
+}
+
+/** Centre on the current (or last known) position. */
 export function centreOnMe(onError) {
   if (!navigator.geolocation) {
     onError("This browser can't share your location.");
     return;
   }
   if (myPos) map.setView(myPos, Math.max(map.getZoom(), 16));
-  if (watchId !== null) return;
-  let first = !myPos;
-  watchId = navigator.geolocation.watchPosition(
-    (pos) => {
-      myPos = [pos.coords.latitude, pos.coords.longitude];
-      if (!meMarker) {
-        meMarker = L.marker(myPos, {
-          icon: L.divIcon({ className: "", html: `<div class="me"></div>`, iconSize: [20, 20], iconAnchor: [10, 10] }),
-          zIndexOffset: 3000,
-          interactive: false,
-        }).addTo(map);
-      } else {
-        meMarker.setLatLng(myPos);
-      }
-      if (first) {
-        map.setView(myPos, 16);
-        first = false;
-      }
-    },
-    (err) => {
-      onError(err.code === 1 ? "Location permission was denied." : "Couldn't get your location.");
-      navigator.geolocation.clearWatch(watchId);
-      watchId = null;
-    },
-    { enableHighAccuracy: true, maximumAge: 10000 }
-  );
+  else onError(locationError || "Waiting for your location…");
+  if (watchId === null && !document.hidden) startWatching(); // try again (e.g. after allowing it)
+}
+
+/** The current position { lat, lon, live } or null. */
+export function getMyPosition() {
+  return myPos ? { lat: myPos[0], lon: myPos[1], live: isLive() } : null;
+}
+
+export function getLocationError() {
+  return locationError;
 }
 
 function escapeHtml(s) {

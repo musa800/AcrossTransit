@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=17";
+import { fetchChecked } from "./net.js?v=18";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -311,4 +311,133 @@ export async function planTrip(from, to, when, arriveBy = false, options = {}) {
       points: decodePolyline(l.legGeometry?.points || ""),
     })),
   }));
+}
+
+// ---------- Near me ----------
+
+/**
+ * Next departures from all stops within `radius` metres of a position,
+ * combined and sorted soonest first.
+ * Returns { stops: [stop with distance], departures: [departure + stop] }.
+ */
+export async function getNearbyDepartures(pos, radius = 200, count = 20) {
+  const dLat = radius / 111320;
+  const dLon = radius / (111320 * Math.cos((pos.lat * Math.PI) / 180));
+  const inBox = await getStopsInBox({
+    minLat: pos.lat - dLat,
+    maxLat: pos.lat + dLat,
+    minLon: pos.lon - dLon,
+    maxLon: pos.lon + dLon,
+  });
+  const stops = inBox
+    .map((s) => ({ ...s, distance: distanceM(pos, s) }))
+    .filter((s) => s.distance <= radius);
+  if (!stops.length) return { stops, departures: [] };
+
+  const data = await gql(
+    `query ($ids: [String], $n: Int!) {
+       stops(ids: $ids) {
+         gtfsId
+         stoptimesWithoutPatterns(numberOfDepartures: $n, omitNonPickups: true) {
+           serviceDay scheduledDeparture realtimeDeparture realtime headsign
+           trip { route { shortName mode } }
+         }
+       }
+     }`,
+    { ids: stops.map((s) => s.gtfsId), n: count }
+  );
+  const byId = new Map(stops.map((s) => [s.gtfsId, s]));
+  const departures = [];
+  for (const st of data.stops || []) {
+    const stop = byId.get(st.gtfsId);
+    if (!stop) continue;
+    for (const d of st.stoptimesWithoutPatterns || []) {
+      departures.push({
+        time: d.serviceDay + (d.realtime ? d.realtimeDeparture : d.scheduledDeparture),
+        realtime: !!d.realtime,
+        headsign: d.headsign || "",
+        line: d.trip?.route?.shortName || "?",
+        mode: d.trip?.route?.mode || "OTHER",
+        stop,
+      });
+    }
+  }
+  departures.sort((a, b) => a.time - b.time);
+  return { stops, departures: departures.slice(0, count) };
+}
+
+// ---------- Routes ----------
+
+/** All operators: [{ id, name }], sorted by name. */
+export async function getAgencies() {
+  const data = await gql(`{ agencies { gtfsId name } }`);
+  return (data.agencies || [])
+    .map((a) => ({ id: a.gtfsId, name: a.name }))
+    .sort((a, b) => a.name.localeCompare(b.name, "et"));
+}
+
+function routeRow(r, agencyName) {
+  return {
+    id: r.gtfsId,
+    line: r.shortName || "",
+    name: r.longName || "",
+    mode: r.mode || "OTHER",
+    operator: agencyName ?? r.agency?.name ?? "",
+  };
+}
+
+/** One operator's routes. */
+export async function getAgencyRoutes(agencyId) {
+  const data = await gql(
+    `query ($id: String!) {
+       agency(id: $id) { name routes { gtfsId shortName longName mode } }
+     }`,
+    { id: agencyId }
+  );
+  const a = data.agency;
+  return (a?.routes || []).map((r) => routeRow(r, a.name));
+}
+
+/** Routes whose number or name matches (any operator). */
+export async function searchRoutes(text) {
+  const data = await gql(
+    `query ($name: String!) {
+       routes(name: $name) { gtfsId shortName longName mode agency { name } }
+     }`,
+    { name: text }
+  );
+  return (data.routes || []).map((r) => routeRow(r));
+}
+
+/**
+ * A route's directions. For each direction, the variant with the most stops:
+ * [{ directionId, headsign, stops: [stop], points: [[lat, lon]] }].
+ */
+export async function getRouteDirections(routeId) {
+  const data = await gql(
+    `query ($id: String!) {
+       route(id: $id) {
+         patterns {
+           directionId headsign
+           stops { gtfsId name code desc lat lon }
+           patternGeometry { points }
+         }
+       }
+     }`,
+    { id: routeId }
+  );
+  const best = new Map();
+  for (const p of data.route?.patterns || []) {
+    const dir = p.directionId ?? 0;
+    const cur = best.get(dir);
+    if (!cur || (p.stops || []).length > cur.stops.length) {
+      best.set(dir, {
+        directionId: dir,
+        headsign: p.headsign || (p.stops?.length ? p.stops[p.stops.length - 1].name : ""),
+        stops: p.stops || [],
+        points: decodePolyline(p.patternGeometry?.points || ""),
+      });
+    }
+  }
+  return [...best.values()].sort((a, b) => a.directionId - b.directionId);
 }

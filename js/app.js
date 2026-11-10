@@ -3,13 +3,15 @@
 
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
-  getStopLineDepartures, getStopLineSchedule,
-} from "./peatus.js?v=17";
+  getStopLineDepartures, getStopLineSchedule, getNearbyDepartures,
+} from "./peatus.js?v=18";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, lineColor, setMode,
-} from "./map.js?v=17";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=17";
+  initLocation, getMyPosition, getLocationError, showRoute, clearRoute,
+} from "./map.js?v=18";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=18";
+import { initRoutes, enterRoutes } from "./routes.js?v=18";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -41,7 +43,9 @@ function switchTab(tab) {
   }
   const onMap = tab === "map" || tab === "plan";
   $("stops-view").hidden = tab !== "stops";
+  $("routes-view").hidden = tab !== "routes";
   $("map-view").hidden = !onMap;
+  if (tab === "routes") enterRoutes();
   $("map-view").classList.toggle("plan-mode", tab === "plan");
   if (onMap) {
     setMode(tab === "plan" ? "plan" : "stops");
@@ -55,7 +59,7 @@ function switchTab(tab) {
 /** Shrink the map when the bottom panel of the current tab is open. */
 function updateLayout(resize = true, force = false) {
   const open =
-    activeTab === "map" ? !$("stop-sheet").hidden :
+    activeTab === "map" ? !$("stop-sheet").hidden || !$("near-sheet").hidden :
     activeTab === "plan" ? isPlanSheetOpen() : false;
   const view = $("map-view");
   if (view.classList.contains("sheet-open") === open && !force) return;
@@ -281,6 +285,8 @@ function loadRoutes(stop) {
 // ---------- Opening and closing a stop ----------
 
 function openStop(stop) {
+  closeNear(false);
+  hideRouteBar();
   currentStop = stop;
   currentRoutes = [];
   lastDepartures = [];
@@ -445,6 +451,7 @@ for (const b of document.querySelectorAll(".day-btn")) {
 // ---------- Map ----------
 
 initMap($("map"), mapStatus);
+initLocation(); // centre on you once, keep the position updated while the app is open
 initPlanner(() => {
   // force: the panel may only have changed height (hidden/shown steps).
   if (activeTab === "plan") updateLayout(true, true);
@@ -460,6 +467,147 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden && (activeTab === "map" || activeTab === "plan")) showMap();
 });
 
+// ---------- Near me: departures from all stops within 200 m ----------
+
+const NEAR_RADIUS_M = 200;
+let nearPos = null;   // fixed where the button was tapped (doesn't follow you)
+let nearTimer = null;
+let nearRun = 0;
+let nearLast = null;  // { stops, departures, at }
+
+function nearDistance(m) {
+  return `${Math.round(m / 10) * 10} m`;
+}
+
+function renderNear(stale) {
+  const list = $("near-departures");
+  list.innerHTML = "";
+  const now = Date.now() / 1000;
+  const { stops, departures, at } = nearLast;
+  const deps = stale ? departures.filter((d) => d.time >= now - 60) : departures;
+  const when = new Date(at).toLocaleTimeString("et-EE", { hour: "2-digit", minute: "2-digit" });
+  const n = stops.length;
+  $("near-note").textContent =
+    `${n} ${n === 1 ? "stop" : "stops"} within ${NEAR_RADIUS_M} m · ` +
+    (stale ? `last updated ${when}, offline, not live` : `updated ${when}`);
+  $("near-note").classList.toggle("stale", stale);
+  if (!n) {
+    list.innerHTML = `<li class="muted">No stops within ${NEAR_RADIUS_M} m of you.</li>`;
+    return;
+  }
+  if (!deps.length) {
+    list.innerHTML = `<li class="muted">No upcoming departures from these stops.</li>`;
+    return;
+  }
+  for (const d of deps) {
+    const mins = Math.round((d.time - now) / 60);
+    const li = document.createElement("li");
+    li.className = "dep near-dep";
+    li.appendChild(makeBadge(d.line, d.mode));
+    const head = document.createElement("span");
+    head.className = "headsign";
+    const dest = document.createElement("span");
+    dest.textContent = d.headsign;
+    const where = document.createElement("span");
+    where.className = "near-stop";
+    where.textContent = `${d.stop.name} · ${nearDistance(d.stop.distance)}`;
+    head.append(dest, where);
+    li.appendChild(head);
+    const time = document.createElement("span");
+    time.className = "time";
+    time.innerHTML = `<div class="mins"></div><div class="small muted clock"></div>`;
+    time.querySelector(".mins").textContent = mins <= 0 ? "now" : `${mins} min`;
+    time.querySelector(".clock").textContent = formatClock(d.time);
+    li.appendChild(time);
+    li.addEventListener("click", () => openStop(d.stop));
+    list.appendChild(li);
+  }
+}
+
+async function refreshNear() {
+  if (!nearPos) return;
+  const run = ++nearRun;
+  try {
+    const r = await getNearbyDepartures(nearPos, NEAR_RADIUS_M, 20);
+    if (run !== nearRun || !nearPos) return;
+    nearLast = { ...r, at: Date.now() };
+    renderNear(false);
+  } catch (err) {
+    if (run !== nearRun || !nearPos) return;
+    if (nearLast) renderNear(true);
+    else $("near-departures").innerHTML = "";
+    if (!nearLast) {
+      const li = document.createElement("li");
+      li.className = "muted";
+      li.textContent = "Couldn't load departures: " + err.message;
+      $("near-departures").appendChild(li);
+    }
+  }
+}
+
+function openNear() {
+  const pos = getMyPosition();
+  if (!pos) {
+    mapStatus(getLocationError() || "Waiting for your location…", true);
+    return;
+  }
+  closeStop();
+  hideRouteBar();
+  nearPos = pos;
+  nearLast = null;
+  $("near-note").textContent = pos.live ? "" : "Using your last known position.";
+  $("near-departures").innerHTML = `<li class="muted">Loading…</li>`;
+  $("near-departures").scrollTop = 0;
+  $("near-sheet").hidden = false;
+  if (activeTab === "map") updateLayout();
+  refreshNear();
+  clearInterval(nearTimer);
+  nearTimer = setInterval(refreshNear, DEPARTURES_REFRESH_MS);
+}
+
+function closeNear(layout = true) {
+  if ($("near-sheet").hidden) return;
+  nearPos = null;
+  nearRun++;
+  clearInterval(nearTimer);
+  $("near-sheet").hidden = true;
+  if (layout && activeTab === "map") updateLayout();
+}
+
+$("near-btn").addEventListener("click", openNear);
+$("near-close").addEventListener("click", () => closeNear());
+
+// ---------- A route opened from the Routes tab ----------
+
+const ROUTE_COLOR = "#e6194b";
+
+function hideRouteBar() {
+  if ($("route-bar").hidden) return;
+  $("route-bar").hidden = true;
+  clearRoute();
+}
+
+initRoutes({
+  onShowOnMap(route, direction) {
+    closeNear(false);
+    closeStop();
+    switchTab("map");
+    showRoute(route, direction);
+    const b = $("route-bar-badge");
+    const nb = makeBadge(route.line, route.mode);
+    nb.id = "route-bar-badge";
+    nb.style.background = ROUTE_COLOR; // same colour as the drawn route and its buses
+    b.replaceWith(nb);
+    $("route-bar-text").textContent = `→ ${direction.headsign}`;
+    $("route-bar").hidden = false;
+  },
+  onOpenStop(stop) {
+    switchTab("map");
+    openStop(stop);
+  },
+});
+$("route-bar-close").addEventListener("click", hideRouteBar);
+
 // ---------- Offline / online ----------
 
 function updateOnlineState() {
@@ -468,6 +616,7 @@ function updateOnlineState() {
   if (!offline) {
     // Back online: reload what's on screen.
     if (currentStop) refreshDepartures();
+    if (nearPos) refreshNear();
     if (activeTab === "map" || activeTab === "plan") showMap();
   }
 }

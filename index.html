@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-title" content="AcrossTransit">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="style.css?v=17">
+  <link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
   <div id="offline-banner" class="offline-banner" hidden>You're offline. Departures, buses and the map need a connection.</div>
@@ -51,10 +51,42 @@
     </main>
   </div>
 
+  <!-- Routes tab -->
+  <div id="routes-view" class="view" hidden>
+    <header>
+      <h1>Routes</h1>
+      <input id="routes-search" type="search" placeholder="Line number, name or company" autocomplete="off">
+    </header>
+    <main>
+      <div id="routes-main">
+        <div id="routes-list"></div>
+      </div>
+      <section id="route-detail" hidden>
+        <div class="panel-head">
+          <button id="route-back" type="button" aria-label="Back to routes">←</button>
+          <span id="route-detail-badge"></span>
+          <div class="grow">
+            <h2 id="route-detail-title"></h2>
+            <p id="route-detail-operator" class="muted small"></p>
+          </div>
+        </div>
+        <div id="route-dirs" class="day-btns route-dirs"></div>
+        <button id="route-show-map" type="button" class="show-map-btn" hidden>Show on map</button>
+        <ul id="route-stops" class="route-stops"></ul>
+      </section>
+    </main>
+  </div>
+
   <!-- Map tab -->
   <div id="map-view" class="view">
     <div id="map"></div>
+    <button id="near-btn" type="button" class="map-btn near-btn" aria-label="Departures near me">🚏</button>
     <button id="centre-btn" type="button" class="map-btn" aria-label="Centre on me">◎</button>
+    <div id="route-bar" class="route-bar" hidden>
+      <span id="route-bar-badge"></span>
+      <span id="route-bar-text" class="grow"></span>
+      <button id="route-bar-close" type="button" aria-label="Close route">✕</button>
+    </div>
     <div id="map-status" class="map-status">Tap a stop to see its buses</div>
 
     <!-- Stop panel: opens over the bottom of the map when a stop is chosen -->
@@ -66,6 +98,16 @@
       <div id="sheet-lines" class="line-chips"></div>
       <p id="sheet-updated" class="stale small sheet-note" hidden></p>
       <ul id="sheet-departures" class="sheet-list"></ul>
+    </section>
+
+    <!-- Near me panel: departures from all stops within 200 m -->
+    <section id="near-sheet" class="sheet" hidden>
+      <div class="sheet-head">
+        <h2>Near you</h2>
+        <button id="near-close" type="button" aria-label="Close">✕</button>
+      </div>
+      <p id="near-note" class="muted small sheet-note"></p>
+      <ul id="near-departures" class="sheet-list"></ul>
     </section>
 
     <!-- Plan tab: start/destination box over the top of the map -->
@@ -129,11 +171,12 @@
 
   <nav class="tabs">
     <button class="tab-btn" data-tab="stops" type="button">Stops</button>
+    <button class="tab-btn" data-tab="routes" type="button">Routes</button>
     <button class="tab-btn active" data-tab="map" type="button">Map</button>
     <button class="tab-btn" data-tab="plan" type="button">Plan</button>
   </nav>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script type="module" src="js/app.js?v=17"></script>
+  <script type="module" src="js/app.js?v=18"></script>
 </body>
 </html>
