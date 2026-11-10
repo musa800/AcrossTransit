@@ -12,7 +12,7 @@ import { fetchChecked } from "./net.js";
 // The city's feed blocks requests from other websites (CORS), so the app
 // reads it through our Cloudflare Worker relay (see relay/cloudflare-worker.js).
 // While RELAY_URL is empty, the app tries the feed directly.
-const RELAY_URL = "";
+const RELAY_URL = "https://acrosstransit-relay.musa-quliyev97.workers.dev/gps";
 const GPS_URL = RELAY_URL || "https://transport.tallinn.ee/gps.txt";
 
 const TYPES = { 1: "TROLLEYBUS", 2: "BUS", 3: "TRAM" };
