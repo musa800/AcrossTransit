@@ -3,15 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Tallinn Transit</title>
+  <title>Across Transit</title>
+  <meta name="description" content="Live departures, buses on the map, schedules and trip planning.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#4a9af0">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <!-- iPhone / iPad home screen -->
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="AcrossTransit">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
+  <div id="offline-banner" class="offline-banner" hidden>You're offline. Departures, buses and the map need a connection.</div>
   <!-- Stops tab -->
-  <div id="stops-view" class="view">
+  <div id="stops-view" class="view" hidden>
     <header>
-      <h1>Tallinn Transit</h1>
+      <h1>Across Transit</h1>
       <form id="search-form" autocomplete="off">
         <input id="search-input" type="search" placeholder="Search a stop, e.g. Viru" required>
         <button type="submit">Search</button>
@@ -41,7 +52,7 @@
   </div>
 
   <!-- Map tab -->
-  <div id="map-view" class="view" hidden>
+  <div id="map-view" class="view">
     <div id="map"></div>
     <button id="centre-btn" type="button" class="map-btn" aria-label="Centre on me">◎</button>
     <div id="map-status" class="map-status">Tap a stop to see its buses</div>
@@ -53,6 +64,7 @@
         <button id="sheet-close" type="button" aria-label="Close stop">✕</button>
       </div>
       <div id="sheet-lines" class="line-chips"></div>
+      <p id="sheet-updated" class="stale small sheet-note" hidden></p>
       <ul id="sheet-departures" class="sheet-list"></ul>
     </section>
 
@@ -116,12 +128,12 @@
   </section>
 
   <nav class="tabs">
-    <button class="tab-btn active" data-tab="stops" type="button">Stops</button>
-    <button class="tab-btn" data-tab="map" type="button">Map</button>
+    <button class="tab-btn" data-tab="stops" type="button">Stops</button>
+    <button class="tab-btn active" data-tab="map" type="button">Map</button>
     <button class="tab-btn" data-tab="plan" type="button">Plan</button>
   </nav>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script type="module" src="js/app.js?v=14"></script>
+  <script type="module" src="js/app.js?v=15"></script>
 </body>
 </html>

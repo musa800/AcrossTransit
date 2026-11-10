@@ -4,12 +4,12 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule,
-} from "./peatus.js?v=14";
+} from "./peatus.js?v=15";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, lineColor, setMode,
-} from "./map.js?v=14";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=14";
+} from "./map.js?v=15";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=15";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -20,7 +20,7 @@ let currentStop = null;
 let currentRoutes = [];
 let lastDepartures = [];
 let selectedLine = null; // { mode, shortName } chosen in the panel, or null for all lines
-let activeTab = "stops";
+let activeTab = "map"; // the app opens on the Map tab
 
 function showMessage(text) {
   $("message").textContent = text || "";
@@ -194,6 +194,9 @@ function renderLineChips() {
 /** Show one line only (route = {mode, shortName}), or all lines with null. */
 function chooseLine(route) {
   selectedLine = route;
+  lastDepartures = [];
+  showingStale = false;
+  $("sheet-updated").hidden = true;
   setLineFilter(route?.mode, route ? route.shortName : null);
   renderLineChips();
   $("sheet-departures").innerHTML = `<li class="muted">Loading…</li>`;
@@ -201,10 +204,26 @@ function chooseLine(route) {
   refreshDepartures();
 }
 
-function renderAllDepartures() {
-  fillDepartureList($("departures"), lastDepartures);
-  fillDepartureList($("sheet-departures"), lastDepartures);
-  $("updated").textContent = "Updated " + new Date().toLocaleTimeString("et-EE");
+let lastLoadedAt = 0;   // when lastDepartures arrived (ms)
+let showingStale = false;
+
+/**
+ * Show lastDepartures in both lists. stale: the latest refresh failed (e.g.
+ * offline), so keep the old list, drop departures that have gone, and say
+ * when it was last updated.
+ */
+function renderAllDepartures(stale = showingStale) {
+  showingStale = stale;
+  const now = Date.now() / 1000;
+  const deps = stale ? lastDepartures.filter((d) => d.time >= now - 60) : lastDepartures;
+  fillDepartureList($("departures"), deps);
+  fillDepartureList($("sheet-departures"), deps);
+  const at = new Date(lastLoadedAt).toLocaleTimeString("et-EE", { hour: "2-digit", minute: "2-digit" });
+  const text = stale ? `Last updated ${at} · offline, not live` : `Updated ${at}`;
+  $("updated").textContent = text;
+  $("updated").classList.toggle("stale", stale);
+  $("sheet-updated").textContent = stale ? text : "";
+  $("sheet-updated").hidden = !stale;
 }
 
 async function refreshDepartures(firstLoad = false) {
@@ -222,15 +241,21 @@ async function refreshDepartures(firstLoad = false) {
     // Ignore the answer if another stop or line was chosen meanwhile.
     if (stop !== currentStop || line !== selectedLine) return;
     lastDepartures = departures;
+    lastLoadedAt = Date.now();
     if (firstLoad) {
       currentRoutes = routes;
       setStop(stop, routes);
       renderLineChips();
       loadRoutes(stop);
     }
-    renderAllDepartures();
+    renderAllDepartures(false);
     showMessage("");
   } catch (err) {
+    // Keep the last loaded departures (marked as not live) if we have any.
+    if (stop === currentStop && line === selectedLine && lastDepartures.length) {
+      renderAllDepartures(true);
+      return;
+    }
     showMessage("Couldn't load departures: " + err.message);
     const list = $("sheet-departures");
     list.innerHTML = "";
@@ -259,6 +284,8 @@ function openStop(stop) {
   currentStop = stop;
   currentRoutes = [];
   lastDepartures = [];
+  showingStale = false;
+  $("sheet-updated").hidden = true;
   selectedLine = null;
 
   // Stops tab
@@ -432,3 +459,29 @@ $("centre-btn").addEventListener("click", () => centreOnMe((msg) => mapStatus(ms
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && (activeTab === "map" || activeTab === "plan")) showMap();
 });
+
+// ---------- Offline / online ----------
+
+function updateOnlineState() {
+  const offline = !navigator.onLine;
+  $("offline-banner").hidden = !offline;
+  if (!offline) {
+    // Back online: reload what's on screen.
+    if (currentStop) refreshDepartures();
+    if (activeTab === "map" || activeTab === "plan") showMap();
+  }
+}
+window.addEventListener("online", updateOnlineState);
+window.addEventListener("offline", updateOnlineState);
+$("offline-banner").hidden = navigator.onLine;
+
+// ---------- Start ----------
+
+switchTab("map");
+
+// Installable app + opening without internet (see sw.js).
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(() => {
+    /* not critical: the app works without it, just not offline */
+  });
+}

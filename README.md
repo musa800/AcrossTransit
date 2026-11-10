@@ -24,4 +24,5 @@ https://musa800.github.io/AcrossTransit/
 
 ## Updating
 When changing any JS or CSS file, bump the `?v=` number everywhere
-(index.html and the `import` lines in js/) so browsers load the new code.
+(index.html and the `import` lines in js/) **and** `VERSION` in sw.js,
+so browsers and the installed app load the new code.

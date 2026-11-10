@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><clipPath id="c"><rect width="100" height="100"/></clipPath></defs><g clip-path="url(#c)">
+<rect width="100" height="100" fill="#4a9af0"/>
+<rect x="0" y="54" width="100" height="46" fill="#1f5fa8"/>
+<rect x="0" y="51" width="100" height="3.5" fill="#fff"/>
+<path d="M-60 22 H64 Q70 22 70 28 V46 H-60 Z" fill="#fff"/>
+<rect x="-40" y="26" width="10" height="9" rx="1.5" fill="#4a9af0"/>
+<rect x="-26" y="26" width="10" height="9" rx="1.5" fill="#4a9af0"/>
+<rect x="-12" y="26" width="10" height="9" rx="1.5" fill="#4a9af0"/>
+<rect x="2" y="26" width="10" height="9" rx="1.5" fill="#4a9af0"/>
+<rect x="16" y="26" width="10" height="9" rx="1.5" fill="#4a9af0"/>
+<rect x="30" y="26" width="10" height="9" rx="1.5" fill="#4a9af0"/>
+<rect x="44" y="26" width="10" height="9" rx="1.5" fill="#4a9af0"/>
+<path d="M58 26 H63 Q66 26 66 29 V40 H58 Z" fill="#4a9af0"/>
+<rect x="-60" y="39" width="114" height="2" fill="#4a9af0" opacity="0.35"/>
+<circle cx="-14" cy="47" r="5" fill="#1f5fa8" stroke="#fff" stroke-width="2.5"/>
+<circle cx="14" cy="47" r="5" fill="#1f5fa8" stroke="#fff" stroke-width="2.5"/>
+<circle cx="54" cy="47" r="5" fill="#1f5fa8" stroke="#fff" stroke-width="2.5"/>
+<path d="M160 61 H44 Q40 61 38.5 64 L30.5 76.5 Q29.5 79 32.5 79 H160 Z" fill="#fff"/>
+<path d="M40.5 66 H50 V73 H35.2 Z" fill="#1f5fa8"/>
+<rect x="54" y="66" width="10" height="7" rx="1.5" fill="#1f5fa8"/>
+<rect x="68" y="66" width="10" height="7" rx="1.5" fill="#1f5fa8"/>
+<rect x="82" y="66" width="10" height="7" rx="1.5" fill="#1f5fa8"/>
+<rect x="96" y="66" width="10" height="7" rx="1.5" fill="#1f5fa8"/>
+<rect x="32" y="75.5" width="128" height="1.5" fill="#1f5fa8" opacity="0.35"/>
+<rect x="0" y="83" width="100" height="2.5" fill="#fff"/>
+</g></svg>
