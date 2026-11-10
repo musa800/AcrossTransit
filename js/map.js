@@ -2,7 +2,7 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=23";
+import { getVehicles, lineKey } from "./vehicles.js?v=24";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -26,8 +26,122 @@ let lastUpdate = "";
 const CELL_LAT = 0.02;  // ≈ 2.2 km
 const CELL_LON = 0.04;  // ≈ 2.3 km at Estonian latitudes
 const cells = new Map();     // "i:j" -> "loading" | "done"
+const cellTime = new Map();  // "i:j" -> when it was loaded (ms), for the 7-day memory
 const stopsById = new Map(); // every stop loaded so far
 let stopLoader = null;       // async (box) => stops
+let pendingPreload = null;   // { lat, lon } waiting for setStopSource
+
+// Stops rarely change, so loaded squares are remembered on the phone for
+// 7 days: reopening the app shows them without any request.
+const STORE_KEY = "acrosstransit.stops.v1";
+const STORE_MS = 7 * 24 * 3600 * 1000;
+const STORE_MAX_CHARS = 3_500_000; // stay well inside the browser's storage limit
+
+function cellOf(lat, lon) {
+  return `${Math.floor(lat / CELL_LAT)}:${Math.floor(lon / CELL_LON)}`;
+}
+
+function loadStore() {
+  let data;
+  try {
+    data = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
+  } catch {
+    return;
+  }
+  if (!data || !data.cells || !data.stops) return;
+  const now = Date.now();
+  for (const [key, t] of Object.entries(data.cells)) {
+    if (now - t < STORE_MS && !cells.has(key)) {
+      cells.set(key, "done");
+      cellTime.set(key, t);
+    }
+  }
+  for (const [gtfsId, name, code, desc, lat, lon] of data.stops) {
+    if (cellTime.has(cellOf(lat, lon))) stopsById.set(gtfsId, { gtfsId, name, code, desc, lat, lon });
+  }
+}
+
+let saveTimer = null;
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveStore, 2000);
+}
+
+function saveStore() {
+  // Newest squares first; drop the oldest if it gets too big.
+  const keys = [...cellTime.keys()].sort((a, b) => cellTime.get(b) - cellTime.get(a));
+  const byCell = new Map();
+  for (const st of stopsById.values()) {
+    const k = cellOf(st.lat, st.lon);
+    if (!cellTime.has(k)) continue;
+    if (!byCell.has(k)) byCell.set(k, []);
+    byCell.get(k).push([st.gtfsId, st.name, st.code || "", st.desc || "", st.lat, st.lon]);
+  }
+  while (keys.length) {
+    const data = { cells: {}, stops: [] };
+    for (const k of keys) {
+      data.cells[k] = cellTime.get(k);
+      for (const row of byCell.get(k) || []) data.stops.push(row);
+    }
+    const json = JSON.stringify(data);
+    if (json.length <= STORE_MAX_CHARS) {
+      try {
+        localStorage.setItem(STORE_KEY, json);
+      } catch {
+        /* storage full or unavailable: memory just isn't kept */
+      }
+      return;
+    }
+    keys.splice(Math.ceil(keys.length * 0.8)); // drop the oldest 20% and try again
+  }
+}
+
+function addStops(stops) {
+  for (const s of stops) stopsById.set(s.gtfsId, s);
+}
+
+/** Load all stops within ~5 km of a point in one request (squares already known are skipped). */
+function preloadAround(lat, lon, radiusM = 5000) {
+  if (!stopLoader) {
+    pendingPreload = { lat, lon };
+    return;
+  }
+  const dLat = radiusM / 111320;
+  const dLon = radiusM / (111320 * Math.cos((lat * Math.PI) / 180));
+  const i0 = Math.floor((lat - dLat) / CELL_LAT);
+  const i1 = Math.floor((lat + dLat) / CELL_LAT);
+  const j0 = Math.floor((lon - dLon) / CELL_LON);
+  const j1 = Math.floor((lon + dLon) / CELL_LON);
+  const missing = [];
+  for (let i = i0; i <= i1; i++) {
+    for (let j = j0; j <= j1; j++) {
+      const key = `${i}:${j}`;
+      if (!cells.has(key)) missing.push(key);
+    }
+  }
+  if (!missing.length) return;
+  for (const k of missing) cells.set(k, "loading");
+  const box = {
+    minLat: i0 * CELL_LAT,
+    maxLat: (i1 + 1) * CELL_LAT,
+    minLon: j0 * CELL_LON,
+    maxLon: (j1 + 1) * CELL_LON,
+  };
+  stopLoader(box)
+    .then((stops) => {
+      addStops(stops);
+      const t = Date.now();
+      for (const k of missing) {
+        cells.set(k, "done");
+        cellTime.set(k, t);
+      }
+      render();
+      scheduleSave();
+    })
+    .catch(() => {
+      for (const k of missing) if (cells.get(k) === "loading") cells.delete(k);
+    });
+}
 const stopDots = new Map(); // stop id -> circle marker
 let onStopTap = () => {};
 let onPlanTap = () => {};
@@ -297,6 +411,10 @@ function renderVehicles(hide) {
 export function setStopSource(loader, stopTapCallback) {
   stopLoader = loader;
   onStopTap = stopTapCallback;
+  loadStore();
+  const c = pendingPreload || getCenter();
+  pendingPreload = null;
+  preloadAround(c.lat, c.lon);
   render();
 }
 
@@ -328,9 +446,11 @@ function ensureCells(center) {
       };
       stopLoader(box)
         .then((stops) => {
-          for (const s of stops) stopsById.set(s.gtfsId, s);
+          addStops(stops);
           cells.set(key, "done");
+          cellTime.set(key, Date.now());
           render();
+          scheduleSave();
         })
         .catch(() => cells.delete(key)); // try again next time the map moves here
     }
@@ -342,21 +462,24 @@ export function setPlanTapHandler(cb) {
   onPlanTap = cb;
 }
 
-// While the map is being dragged: update stop dots about 20 times a second,
-// and load new squares of stops at most every 300 ms. Buses and lines wait
-// until the drag ends (moveend → render).
-const MOVE_DRAW_MS = 50;
-const MOVE_LOAD_MS = 300;
-let lastMoveDraw = 0;
+// While the map is being dragged: update stop dots on every screen refresh
+// (the browser skips frames by itself if the phone is busy), and load new
+// squares of stops at most every 150 ms. Buses and lines wait until the drag
+// ends (moveend → render).
+const MOVE_LOAD_MS = 150;
 let lastMoveLoad = 0;
+let framePending = false;
 
 function onMoving() {
-  const now = performance.now();
-  if (now - lastMoveDraw < MOVE_DRAW_MS) return;
-  lastMoveDraw = now;
-  const load = now - lastMoveLoad >= MOVE_LOAD_MS;
-  if (load) lastMoveLoad = now;
-  renderStops(tooWide(), { moving: true, load });
+  if (framePending) return;
+  framePending = true;
+  requestAnimationFrame(() => {
+    framePending = false;
+    const now = performance.now();
+    const load = now - lastMoveLoad >= MOVE_LOAD_MS;
+    if (load) lastMoveLoad = now;
+    renderStops(tooWide(), { moving: true, load });
+  });
 }
 
 function renderStops(hide, { moving = false, load = true } = {}) {
@@ -802,6 +925,7 @@ function startWatching() {
       if (!centredOnce) {
         centredOnce = true;
         if (!userDragged) map.setView(myPos, Math.max(map.getZoom(), 16));
+        preloadAround(myPos[0], myPos[1]); // skips squares already loaded
       }
     },
     (err) => {
