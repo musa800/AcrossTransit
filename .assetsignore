@@ -1,0 +1,6 @@
+# Files in the repository that are not part of the website
+.git
+relay
+README.md
+wrangler.jsonc
+.assetsignore
