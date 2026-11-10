@@ -9,10 +9,14 @@ A personal transit app for Tallinn, built step by step.
 
 ## Steps
 1. ✅ Stop search and next departures
-2. Map with live vehicles
+2. ✅ Map with live vehicles
 3. Select a line → route trajectory + its vehicles
 4. Line schedule tables
 5. Route planner with transfers
 
-## Run locally
-Open `index.html` in a browser.
+## Live site
+https://musa800.github.io/AcrossTransit/
+
+## Code layout
+- `js/peatus.js`, `js/vehicles.js`, `js/net.js` — data only (reusable, e.g. in Across Town)
+- `js/map.js`, `js/app.js` — screens

@@ -2,40 +2,61 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Tallinn Transit</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <h1>Tallinn Transit</h1>
-    <form id="search-form" autocomplete="off">
-      <input id="search-input" type="search" placeholder="Search a stop, e.g. Viru" required>
-      <button type="submit">Search</button>
-    </form>
-  </header>
+  <!-- Stops tab -->
+  <div id="stops-view" class="view">
+    <header>
+      <h1>Tallinn Transit</h1>
+      <form id="search-form" autocomplete="off">
+        <input id="search-input" type="search" placeholder="Search a stop, e.g. Viru" required>
+        <button type="submit">Search</button>
+      </form>
+    </header>
 
-  <main>
-    <section id="stop-list" hidden>
-      <h2>Stops</h2>
-      <ul id="stops"></ul>
-    </section>
+    <main>
+      <section id="stop-list" hidden>
+        <ul id="stops"></ul>
+      </section>
 
-    <section id="departures-panel" hidden>
-      <div class="panel-head">
-        <button id="back-btn" type="button" aria-label="Back to stops">←</button>
-        <div>
-          <h2 id="stop-name"></h2>
-          <p id="stop-meta" class="muted"></p>
+      <section id="departures-panel" hidden>
+        <div class="panel-head">
+          <button id="back-btn" type="button" aria-label="Back to stops">←</button>
+          <div class="grow">
+            <h2 id="stop-name"></h2>
+            <p id="stop-meta" class="muted small"></p>
+          </div>
+          <button id="show-on-map" type="button">Map</button>
         </div>
-      </div>
-      <ul id="departures"></ul>
-      <p id="updated" class="muted small"></p>
-    </section>
+        <ul id="departures"></ul>
+        <p id="updated" class="muted small"></p>
+      </section>
 
-    <p id="message" class="muted"></p>
-  </main>
+      <p id="message" class="muted"></p>
+    </main>
+  </div>
 
-  <script src="app.js"></script>
+  <!-- Map tab -->
+  <div id="map-view" class="view" hidden>
+    <div id="map"></div>
+    <div id="map-stop-chip" class="chip" hidden>
+      <span>Stop: <strong id="map-stop-name"></strong></span>
+      <button id="map-stop-clear" type="button" aria-label="Clear stop">✕</button>
+    </div>
+    <button id="centre-btn" type="button" class="map-btn" aria-label="Centre on me">◎</button>
+    <div id="map-status" class="map-status">Loading vehicles…</div>
+  </div>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="stops" type="button">Stops</button>
+    <button class="tab-btn" data-tab="map" type="button">Map</button>
+  </nav>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>
