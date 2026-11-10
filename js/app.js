@@ -1,7 +1,10 @@
 // Screen: tabs, stop search, departures list. Wires everything together.
 
-import { searchStops, getStopDepartures, getTallinnStops } from "./peatus.js?v=5";
-import { initMap, showMap, hideMap, setStop, clearStop, centreOnMe, setStops, showStopPopup } from "./map.js?v=5";
+import { searchStops, getStopDepartures, getTallinnStops, getStopPatterns } from "./peatus.js?v=6";
+import {
+  initMap, showMap, hideMap, setStop, clearStop, centreOnMe,
+  setStops, showStopPopup, showStopRoutes, toggleVehicleRadius,
+} from "./map.js?v=6";
 
 const DEPARTURES_REFRESH_MS = 30000;
 
@@ -143,6 +146,15 @@ async function refreshDepartures(firstLoad = false, fromMap = false) {
       $("map-stop-name").textContent = stop.name;
       $("map-stop-chip").hidden = false;
       if (fromMap) showStopPopup(stopPopup(stop, departures));
+      getStopPatterns(stop.gtfsId)
+        .then((patterns) => {
+          if (stop === currentStop) showStopRoutes(patterns);
+        })
+        .catch((err) => {
+          const el = $("map-status");
+          el.textContent = "Couldn't load routes: " + err.message;
+          el.classList.add("error");
+        });
     }
     showMessage("");
   } catch (err) {
@@ -191,6 +203,12 @@ getTallinnStops()
     el.textContent = "Couldn't load stops: " + err.message;
     el.classList.add("error");
   });
+
+$("radius-btn").addEventListener("click", () => {
+  const on = toggleVehicleRadius();
+  $("radius-btn").classList.toggle("active", on);
+  $("radius-btn").setAttribute("aria-pressed", on);
+});
 
 $("centre-btn").addEventListener("click", () =>
   centreOnMe((msg) => {

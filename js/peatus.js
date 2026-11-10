@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=5";
+import { fetchChecked } from "./net.js?v=6";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -79,4 +79,53 @@ export async function getStopDepartures(stopId, count = 20) {
       mode: d.trip?.route?.mode || "OTHER",
     })),
   };
+}
+
+/**
+ * The routes (patterns) that pass through a stop, with their shape on the map.
+ * Returns [{ line, mode, headsign, points: [[lat, lon], ...] }].
+ */
+export async function getStopPatterns(stopId) {
+  const data = await gql(
+    `query ($id: String!) {
+       stop(id: $id) {
+         patterns {
+           headsign
+           route { shortName mode }
+           patternGeometry { points }
+         }
+       }
+     }`,
+    { id: stopId }
+  );
+  const patterns = data.stop?.patterns || [];
+  return patterns
+    .map((p) => ({
+      line: p.route?.shortName || "?",
+      mode: p.route?.mode || "OTHER",
+      headsign: p.headsign || "",
+      points: decodePolyline(p.patternGeometry?.points || ""),
+    }))
+    .filter((p) => p.points.length > 1);
+}
+
+/** Decode a Google "encoded polyline" string into [[lat, lon], ...]. */
+export function decodePolyline(str) {
+  const points = [];
+  let i = 0, lat = 0, lon = 0;
+  while (i < str.length) {
+    for (const which of [0, 1]) {
+      let shift = 0, result = 0, b;
+      do {
+        b = str.charCodeAt(i++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20 && i < str.length);
+      const delta = result & 1 ? ~(result >> 1) : result >> 1;
+      if (which === 0) lat += delta;
+      else lon += delta;
+    }
+    points.push([lat / 1e5, lon / 1e5]);
+  }
+  return points;
 }

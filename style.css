@@ -240,3 +240,15 @@ p { margin: 4px 0; }
 .pop-mins { font-weight: 700; font-variant-numeric: tabular-nums; color: #222; }
 .small-badge { min-width: 32px; padding: 2px 4px; font-size: 0.8rem; }
 .pop-btn { width: 100%; padding: 6px 10px; font-size: 0.9rem; }
+
+/* 1 km vehicle radius toggle (sits above the centre button) */
+.radius-btn {
+  bottom: 148px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+.radius-btn.active {
+  background: var(--accent);
+  color: #fff;
+}

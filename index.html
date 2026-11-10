@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Tallinn Transit</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
   <!-- Stops tab -->
@@ -47,6 +47,7 @@
       <span>Stop: <strong id="map-stop-name"></strong></span>
       <button id="map-stop-clear" type="button" aria-label="Clear stop">✕</button>
     </div>
+    <button id="radius-btn" type="button" class="map-btn radius-btn active" aria-pressed="true" aria-label="Limit vehicles to 1 km">1 km</button>
     <button id="centre-btn" type="button" class="map-btn" aria-label="Centre on me">◎</button>
     <div id="map-status" class="map-status">Loading vehicles…</div>
   </div>
@@ -57,6 +58,6 @@
   </nav>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script type="module" src="js/app.js?v=5"></script>
+  <script type="module" src="js/app.js?v=6"></script>
 </body>
 </html>

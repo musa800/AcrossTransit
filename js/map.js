@@ -1,18 +1,23 @@
 // Screen: the Leaflet map with live vehicles, stops, the selected stop and
 // the user's own position.
 
-import { getVehicles, lineKey } from "./vehicles.js?v=5";
+import { getVehicles, lineKey } from "./vehicles.js?v=6";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
 
 // Limits that keep the map smooth on phones:
-const RADIUS_M = 2000;       // vehicles and stops are shown within this distance of the map centre
-const HIDE_WIDTH_M = 25000;  // when the visible map is this wide or wider, hide them all
+const VEHICLE_RADIUS_M = 1000; // vehicles: within this distance of the map centre (can be toggled off)
+const STOP_RADIUS_M = 2000;    // stops: always within this distance of the map centre
+const HIDE_WIDTH_M = 25000;    // when the visible map is this wide or wider, hide vehicles and stops
+
+// Colours for the lines of a selected stop (route shapes and their vehicles).
+const LINE_COLORS = ["#e6194b", "#4363d8", "#f58231", "#3cb44b", "#911eb4", "#f032e6", "#008080", "#9a6324", "#800000", "#000075"];
 
 let map;
 let stopRenderer;            // stops are drawn on one canvas layer (much lighter than many HTML markers)
 let radiusCircle = null;
+let vehicleRadiusOn = true;
 
 const vehicleMarkers = new Map(); // vehicle id -> marker
 let lastVehicles = [];            // latest feed, so panning can redraw without refetching
@@ -22,7 +27,7 @@ let allStops = [];                // every stop in Tallinn
 const stopDots = new Map();       // stop id -> circle marker
 let onStopTap = () => {};
 
-let selected = null;              // { stop, marker, lines: Set of line keys } or null
+let selected = null;              // { stop, marker, lines: Set of line keys, colors: Map key->colour, routeLayer } or null
 
 let meMarker = null;
 let myPos = null;
@@ -64,8 +69,15 @@ function visibleArea() {
   return { center: map.getCenter(), tooWide: width >= HIDE_WIDTH_M };
 }
 
-function within(center, lat, lon) {
-  return map.distance(center, [lat, lon]) <= RADIUS_M;
+function within(center, lat, lon, radius) {
+  return map.distance(center, [lat, lon]) <= radius;
+}
+
+/** Turn the 1 km vehicle radius on or off. Returns the new state. */
+export function toggleVehicleRadius() {
+  vehicleRadiusOn = !vehicleRadiusOn;
+  render();
+  return vehicleRadiusOn;
 }
 
 function render() {
@@ -77,14 +89,14 @@ function render() {
 }
 
 function drawRadius(center, tooWide) {
-  if (tooWide) {
+  if (tooWide || !vehicleRadiusOn) {
     if (radiusCircle) radiusCircle.remove();
     radiusCircle = null;
     return;
   }
   if (!radiusCircle) {
     radiusCircle = L.circle(center, {
-      radius: RADIUS_M,
+      radius: VEHICLE_RADIUS_M,
       interactive: false,
       color: "#0b6bcb",
       weight: 1,
@@ -99,14 +111,14 @@ function drawRadius(center, tooWide) {
 
 // ---------- Vehicles ----------
 
-function vehicleIcon(v) {
+function vehicleIcon(v, color) {
   const arrow =
     v.heading === null
       ? ""
       : `<span class="v-arrow" style="transform: rotate(${v.heading}deg)"></span>`;
   return L.divIcon({
     className: "",
-    html: `<div class="vehicle ${v.mode}">${arrow}<span class="v-label">${escapeHtml(v.line)}</span></div>`,
+    html: `<div class="vehicle ${v.mode}"${color ? ` style="background:${color}"` : ""}>${arrow}<span class="v-label">${escapeHtml(v.line)}</span></div>`,
     iconSize: [30, 30],
     iconAnchor: [15, 15],
   });
@@ -136,23 +148,24 @@ function renderVehicles(center, tooWide) {
     : lastVehicles.filter(
         (v) =>
           (!selected || selected.lines.has(lineKey(v.mode, v.line))) &&
-          within(center, v.lat, v.lon)
+          (!vehicleRadiusOn || within(center, v.lat, v.lon, VEHICLE_RADIUS_M))
       );
 
   const keep = new Set();
   for (const v of visible) {
     keep.add(v.id);
-    const sig = `${v.mode}|${v.line}|${v.heading}`;
+    const color = selected?.colors.get(lineKey(v.mode, v.line)) || "";
+    const sig = `${v.mode}|${v.line}|${v.heading}|${color}`;
     let m = vehicleMarkers.get(v.id);
     if (!m) {
-      m = L.marker([v.lat, v.lon], { icon: vehicleIcon(v), zIndexOffset: 1000 }).addTo(map);
+      m = L.marker([v.lat, v.lon], { icon: vehicleIcon(v, color), zIndexOffset: 1000 }).addTo(map);
       m.bindPopup(popupText(v));
       m._sig = sig;
       vehicleMarkers.set(v.id, m);
     } else {
       m.setLatLng([v.lat, v.lon]);
       if (m._sig !== sig) {
-        m.setIcon(vehicleIcon(v));
+        m.setIcon(vehicleIcon(v, color));
         m.setPopupContent(popupText(v));
         m._sig = sig;
       }
@@ -168,8 +181,12 @@ function renderVehicles(center, tooWide) {
   if (!lastUpdate) return;
   let text;
   if (tooWide) text = "Zoom in to see vehicles and stops";
-  else if (selected) text = `${visible.length} on this stop's lines within 2 km`;
-  else text = `${visible.length} vehicles within 2 km`;
+  else {
+    const area = vehicleRadiusOn ? "within 1 km" : "in Tallinn";
+    text = selected
+      ? `${visible.length} on this stop's lines ${area}`
+      : `${visible.length} vehicles ${area}`;
+  }
   onStatus(`${text} · updated ${lastUpdate}`, false);
 }
 
@@ -186,7 +203,7 @@ function renderStops(center, tooWide) {
   const keep = new Set();
   if (!tooWide) {
     for (const s of allStops) {
-      if (!within(center, s.lat, s.lon)) continue;
+      if (!within(center, s.lat, s.lon, STOP_RADIUS_M)) continue;
       keep.add(s.gtfsId);
       if (stopDots.has(s.gtfsId)) continue;
       const dot = L.circleMarker([s.lat, s.lon], {
@@ -222,7 +239,13 @@ export function setStop(stop, routes, recenter = true) {
     zIndexOffset: 2000,
   }).addTo(map);
   marker.on("click", () => onStopTap(stop));
-  selected = { stop, marker, lines: new Set(routes.map((r) => lineKey(r.mode, r.shortName))) };
+  selected = {
+    stop,
+    marker,
+    lines: new Set(routes.map((r) => lineKey(r.mode, r.shortName))),
+    colors: new Map(),
+    routeLayer: L.layerGroup().addTo(map),
+  };
   if (recenter) map.setView([stop.lat, stop.lon], Math.max(map.getZoom(), 15));
   else render();
 }
@@ -234,8 +257,34 @@ export function showStopPopup(content) {
   selected.marker.bindPopup(content, { maxWidth: 260 }).openPopup();
 }
 
+/**
+ * Draw the routes through the selected stop
+ * (patterns: [{ line, mode, headsign, points }]), one colour per line.
+ */
+export function showStopRoutes(patterns) {
+  if (!selected) return;
+  selected.routeLayer.clearLayers();
+  selected.colors.clear();
+  for (const p of patterns) {
+    const key = lineKey(p.mode, p.line);
+    if (!selected.colors.has(key)) {
+      selected.colors.set(key, LINE_COLORS[selected.colors.size % LINE_COLORS.length]);
+    }
+    const color = selected.colors.get(key);
+    // White outline underneath so lines stay visible over the map.
+    L.polyline(p.points, { color: "#fff", weight: 8, opacity: 0.9, interactive: false }).addTo(selected.routeLayer);
+    L.polyline(p.points, { color, weight: 4, opacity: 0.9 })
+      .bindPopup(`<strong>Line ${escapeHtml(p.line)}</strong><br>→ ${escapeHtml(p.headsign)}`)
+      .addTo(selected.routeLayer);
+  }
+  render();
+}
+
 export function clearStop(redraw = true) {
-  if (selected) selected.marker.remove();
+  if (selected) {
+    selected.marker.remove();
+    selected.routeLayer.remove();
+  }
   selected = null;
   if (redraw) render();
 }
