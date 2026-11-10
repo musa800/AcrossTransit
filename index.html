@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Tallinn Transit</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="style.css?v=8">
+  <link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
   <!-- Stops tab -->
@@ -57,12 +57,30 @@
     </section>
   </div>
 
+  <!-- Schedule: one line at the chosen stop, whole day -->
+  <section id="schedule-view" class="schedule" hidden>
+    <div class="sched-head">
+      <button id="sched-back" type="button" aria-label="Back">←</button>
+      <span id="sched-badge"></span>
+      <div class="grow">
+        <h2 id="sched-title"></h2>
+        <p id="sched-stop" class="muted small"></p>
+      </div>
+    </div>
+    <div class="day-btns">
+      <button class="day-btn active" data-day="0" type="button">Today</button>
+      <button class="day-btn" data-day="1" type="button">Tomorrow</button>
+    </div>
+    <div id="sched-legend" class="sched-legend"></div>
+    <div id="sched-body" class="sched-body"></div>
+  </section>
+
   <nav class="tabs">
     <button class="tab-btn active" data-tab="stops" type="button">Stops</button>
     <button class="tab-btn" data-tab="map" type="button">Map</button>
   </nav>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script type="module" src="js/app.js?v=8"></script>
+  <script type="module" src="js/app.js?v=9"></script>
 </body>
 </html>

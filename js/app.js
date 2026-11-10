@@ -1,11 +1,14 @@
 // Screen: tabs, stop search, departures (Stops tab and the map's stop panel).
 // Wires everything together.
 
-import { searchStops, getStopDepartures, getTallinnStops, getStopPatterns } from "./peatus.js?v=8";
+import {
+  searchStops, getStopDepartures, getTallinnStops, getStopPatterns,
+  getStopLineDepartures, getStopLineSchedule,
+} from "./peatus.js?v=9";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
-  setStops, showStopRoutes, lineColor,
-} from "./map.js?v=8";
+  setStops, showStopRoutes, setLineFilter, lineColor,
+} from "./map.js?v=9";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -15,6 +18,7 @@ let depTimer = null;
 let currentStop = null;
 let currentRoutes = [];
 let lastDepartures = [];
+let selectedLine = null; // { mode, shortName } chosen in the panel, or null for all lines
 let activeTab = "stops";
 
 function showMessage(text) {
@@ -137,7 +141,33 @@ function renderLineChips() {
       return true;
     })
     .sort((a, b) => String(a.shortName).localeCompare(String(b.shortName), "et", { numeric: true }));
-  for (const r of lines) box.appendChild(makeBadge(r.shortName, r.mode, "chip-badge"));
+  for (const r of lines) {
+    const isOn = selectedLine && selectedLine.mode === r.mode && selectedLine.shortName === r.shortName;
+    const chip = makeBadge(r.shortName, r.mode, "chip-badge");
+    chip.setAttribute("role", "button");
+    chip.tabIndex = 0;
+    if (selectedLine) chip.classList.add(isOn ? "on" : "faded");
+    chip.addEventListener("click", () => chooseLine(isOn ? null : r));
+    box.appendChild(chip);
+  }
+  if (selectedLine) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "sched-btn";
+    btn.textContent = "Schedule";
+    btn.addEventListener("click", openSchedule);
+    box.appendChild(btn);
+  }
+}
+
+/** Show one line only (route = {mode, shortName}), or all lines with null. */
+function chooseLine(route) {
+  selectedLine = route;
+  setLineFilter(route?.mode, route ? route.shortName : null);
+  renderLineChips();
+  $("sheet-departures").innerHTML = `<li class="muted">Loading…</li>`;
+  $("sheet-departures").scrollTop = 0;
+  refreshDepartures();
 }
 
 function renderAllDepartures() {
@@ -149,9 +179,17 @@ function renderAllDepartures() {
 async function refreshDepartures(firstLoad = false) {
   if (!currentStop) return;
   const stop = currentStop;
+  const line = selectedLine;
   try {
-    const { routes, departures } = await getStopDepartures(stop.gtfsId, 20);
-    if (stop !== currentStop) return; // another stop was opened meanwhile
+    let routes = null;
+    let departures;
+    if (line && !firstLoad) {
+      departures = await getStopLineDepartures(stop.gtfsId, line.mode, line.shortName, 20);
+    } else {
+      ({ routes, departures } = await getStopDepartures(stop.gtfsId, 20));
+    }
+    // Ignore the answer if another stop or line was chosen meanwhile.
+    if (stop !== currentStop || line !== selectedLine) return;
     lastDepartures = departures;
     if (firstLoad) {
       currentRoutes = routes;
@@ -190,6 +228,7 @@ function openStop(stop) {
   currentStop = stop;
   currentRoutes = [];
   lastDepartures = [];
+  selectedLine = null;
 
   // Stops tab
   $("stop-name").textContent = stop.name;
@@ -213,6 +252,7 @@ function openStop(stop) {
 function closeStop() {
   currentStop = null;
   currentRoutes = [];
+  selectedLine = null;
   clearInterval(depTimer);
   clearStop();
   setSheetOpen(false);
@@ -229,7 +269,122 @@ function setSheetOpen(open) {
 
 $("back-btn").addEventListener("click", closeStop);
 $("show-on-map").addEventListener("click", () => switchTab("map"));
-$("sheet-close").addEventListener("click", closeStop);
+$("sheet-close").addEventListener("click", () => {
+  closeSchedule();
+  closeStop();
+});
+
+// ---------- Schedule (one line at this stop, whole day) ----------
+
+let scheduleDay = 0; // 0 = today, 1 = tomorrow
+
+function openSchedule() {
+  if (!currentStop || !selectedLine) return;
+  $("sched-title").textContent = `Line ${selectedLine.shortName}`;
+  $("sched-stop").textContent = currentStop.name;
+  const badge = $("sched-badge");
+  badge.replaceWith(Object.assign(makeBadge(selectedLine.shortName, selectedLine.mode), { id: "sched-badge" }));
+  $("schedule-view").hidden = false;
+  loadSchedule(0);
+}
+
+function closeSchedule() {
+  $("schedule-view").hidden = true;
+}
+
+async function loadSchedule(dayOffset) {
+  scheduleDay = dayOffset;
+  for (const b of document.querySelectorAll(".day-btn")) {
+    b.classList.toggle("active", Number(b.dataset.day) === dayOffset);
+  }
+  const date = new Date();
+  date.setDate(date.getDate() + dayOffset);
+  const body = $("sched-body");
+  body.innerHTML = `<p class="muted">Loading…</p>`;
+  $("sched-legend").innerHTML = "";
+  const stop = currentStop;
+  const line = selectedLine;
+  try {
+    const rows = await getStopLineSchedule(stop.gtfsId, line.mode, line.shortName, date);
+    if (stop !== currentStop || line !== selectedLine || dayOffset !== scheduleDay) return;
+    renderSchedule(rows, dayOffset === 0);
+  } catch (err) {
+    body.innerHTML = "";
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "Couldn't load the schedule: " + err.message;
+    body.appendChild(p);
+  }
+}
+
+function renderSchedule(rows, isToday) {
+  const body = $("sched-body");
+  const legend = $("sched-legend");
+  body.innerHTML = "";
+  legend.innerHTML = "";
+  if (!rows.length) {
+    body.innerHTML = `<p class="muted">No departures of this line from this stop on that day.</p>`;
+    return;
+  }
+
+  // Destinations: the most common one has no mark; others get a, b, c…
+  const counts = new Map();
+  for (const r of rows) counts.set(r.headsign, (counts.get(r.headsign) || 0) + 1);
+  const heads = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
+  const mark = new Map(heads.map((h, i) => [h, i === 0 ? "" : String.fromCharCode(96 + i)]));
+  for (const h of heads) {
+    const p = document.createElement("p");
+    p.className = "small";
+    p.textContent = (mark.get(h) ? `${mark.get(h)} = ` : "") + `→ ${h}`;
+    legend.appendChild(p);
+  }
+
+  const now = Date.now() / 1000;
+  const nextIdx = isToday ? rows.findIndex((r) => r.time >= now) : -1;
+  let currentRow = null;
+
+  // One row per hour.
+  const byHour = new Map();
+  rows.forEach((r, i) => {
+    const h = Math.floor(r.secs / 3600);
+    if (!byHour.has(h)) byHour.set(h, []);
+    byHour.get(h).push({ ...r, i });
+  });
+  for (const [h, list] of byHour) {
+    const row = document.createElement("div");
+    row.className = "sched-row";
+    const hour = document.createElement("span");
+    hour.className = "sched-hour";
+    hour.textContent = String(h % 24).padStart(2, "0");
+    row.appendChild(hour);
+    const mins = document.createElement("span");
+    mins.className = "sched-mins";
+    for (const r of list) {
+      const m = document.createElement("span");
+      m.className = "sched-min";
+      m.textContent = String(Math.floor((r.secs % 3600) / 60)).padStart(2, "0");
+      if (mark.get(r.headsign)) {
+        const sup = document.createElement("sup");
+        sup.textContent = mark.get(r.headsign);
+        m.appendChild(sup);
+      }
+      if (isToday && r.time < now) m.classList.add("past");
+      if (r.i === nextIdx) {
+        m.classList.add("next");
+        currentRow = row;
+      }
+      mins.appendChild(m);
+    }
+    row.appendChild(mins);
+    body.appendChild(row);
+  }
+  if (currentRow) currentRow.scrollIntoView({ block: "center" });
+}
+
+$("sched-back").addEventListener("click", closeSchedule);
+for (const b of document.querySelectorAll(".day-btn")) {
+  b.addEventListener("click", () => loadSchedule(Number(b.dataset.day)));
+}
 
 // ---------- Map ----------
 

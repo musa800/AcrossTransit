@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=8";
+import { fetchChecked } from "./net.js?v=9";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -93,6 +93,7 @@ export async function getStopPatterns(stopId) {
            headsign
            route { shortName mode }
            patternGeometry { points }
+           stops { gtfsId name code desc lat lon }
          }
        }
      }`,
@@ -105,8 +106,80 @@ export async function getStopPatterns(stopId) {
       mode: p.route?.mode || "OTHER",
       headsign: p.headsign || "",
       points: decodePolyline(p.patternGeometry?.points || ""),
+      stops: p.stops || [],
     }))
     .filter((p) => p.points.length > 1);
+}
+
+function sameLine(route, mode, line) {
+  return route && route.mode === mode && route.shortName === line;
+}
+
+/** Next departures of one line at a stop (all its directions/variants merged). */
+export async function getStopLineDepartures(stopId, mode, line, count = 20) {
+  const data = await gql(
+    `query ($id: String!, $n: Int!) {
+       stop(id: $id) {
+         stoptimesForPatterns(numberOfDepartures: $n, omitNonPickups: true) {
+           pattern { route { shortName mode } }
+           stoptimes { serviceDay scheduledDeparture realtimeDeparture realtime headsign }
+         }
+       }
+     }`,
+    { id: stopId, n: count }
+  );
+  const deps = [];
+  for (const group of data.stop?.stoptimesForPatterns || []) {
+    if (!sameLine(group.pattern?.route, mode, line)) continue;
+    for (const d of group.stoptimes || []) {
+      deps.push({
+        time: d.serviceDay + (d.realtime ? d.realtimeDeparture : d.scheduledDeparture),
+        realtime: !!d.realtime,
+        headsign: d.headsign || "",
+        line,
+        mode,
+      });
+    }
+  }
+  deps.sort((a, b) => a.time - b.time);
+  return deps.slice(0, count);
+}
+
+/**
+ * One line's whole-day timetable at a stop.
+ * date: a JS Date (its local calendar day is used).
+ * Returns [{ secs, time, headsign }] sorted, where secs = seconds after the
+ * start of the service day (can exceed 24 h for after-midnight trips).
+ */
+export async function getStopLineSchedule(stopId, mode, line, date) {
+  const ymd =
+    date.getFullYear() +
+    String(date.getMonth() + 1).padStart(2, "0") +
+    String(date.getDate()).padStart(2, "0");
+  const data = await gql(
+    `query ($id: String!, $date: String!) {
+       stop(id: $id) {
+         stoptimesForServiceDate(date: $date, omitNonPickups: true) {
+           pattern { headsign route { shortName mode } }
+           stoptimes { serviceDay scheduledDeparture headsign }
+         }
+       }
+     }`,
+    { id: stopId, date: ymd }
+  );
+  const rows = [];
+  for (const group of data.stop?.stoptimesForServiceDate || []) {
+    if (!sameLine(group.pattern?.route, mode, line)) continue;
+    for (const d of group.stoptimes || []) {
+      rows.push({
+        secs: d.scheduledDeparture,
+        time: d.serviceDay + d.scheduledDeparture,
+        headsign: d.headsign || group.pattern.headsign || "",
+      });
+    }
+  }
+  rows.sort((a, b) => a.secs - b.secs);
+  return rows;
 }
 
 /** Decode a Google "encoded polyline" string into [[lat, lon], ...]. */

@@ -1,7 +1,7 @@
 // Screen: the Leaflet map with stops, the selected stop with its routes and
 // live vehicles, and the user's own position.
 
-import { getVehicles, lineKey } from "./vehicles.js?v=8";
+import { getVehicles, lineKey } from "./vehicles.js?v=9";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -23,7 +23,9 @@ let allStops = [];
 const stopDots = new Map(); // stop id -> circle marker
 let onStopTap = () => {};
 
-// The chosen stop: { stop, marker, lines: Set of line keys, colors: Map key->colour, routeLayer }
+// The chosen stop:
+// { stop, marker, lines: Set of line keys, colors: Map key->colour, routeLayer,
+//   patterns: routes through it, lineFilter: one line key or null, routeStops: Map id->stop }
 let selected = null;
 
 let meMarker = null;
@@ -99,7 +101,10 @@ function updateStatus(hide) {
   if (hide) onStatus("Zoom in to see stops", false);
   else if (!selected) onStatus("Tap a stop to see its buses", false);
   else if (!lastUpdate) onStatus("Loading buses…", false);
-  else onStatus(`${vehicleMarkers.size} on this stop's lines · updated ${lastUpdate}`, false);
+  else {
+    const what = selected.lineFilter ? "on this line" : "on this stop's lines";
+    onStatus(`${vehicleMarkers.size} ${what} · updated ${lastUpdate}`, false);
+  }
 }
 
 // ---------- Vehicles (only for the selected stop's lines) ----------
@@ -112,8 +117,8 @@ function vehicleIcon(v, color) {
   return L.divIcon({
     className: "",
     html: `<div class="vehicle ${v.mode}"${color ? ` style="background:${color}"` : ""}>${arrow}<span class="v-label">${escapeHtml(v.line)}</span></div>`,
-    iconSize: [30, 30],
-    iconAnchor: [15, 15],
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
   });
 }
 
@@ -137,7 +142,12 @@ async function refresh() {
 
 function renderVehicles(hide) {
   const visible =
-    hide || !selected ? [] : lastVehicles.filter((v) => selected.lines.has(lineKey(v.mode, v.line)));
+    hide || !selected
+      ? []
+      : lastVehicles.filter((v) => {
+          const key = lineKey(v.mode, v.line);
+          return selected.lineFilter ? key === selected.lineFilter : selected.lines.has(key);
+        });
 
   const keep = new Set();
   for (const v of visible) {
@@ -188,8 +198,12 @@ export function setStops(stops, tapCallback) {
 function renderStops(hide) {
   const center = map.getCenter();
   const keep = new Set();
+  // No stop chosen: all stops. Stop chosen: only stops along its routes (not the stop itself).
+  const source = selected
+    ? [...selected.routeStops.values()].filter((s) => s.gtfsId !== selected.stop.gtfsId)
+    : allStops;
   if (!hide) {
-    for (const s of allStops) {
+    for (const s of source) {
       if (map.distance(center, [s.lat, s.lon]) > STOP_RADIUS_M) continue;
       keep.add(s.gtfsId);
       if (stopDots.has(s.gtfsId)) continue;
@@ -203,6 +217,7 @@ function renderStops(hide) {
         fillColor: "#3a3f47",
         fillOpacity: 1,
       }).addTo(map);
+      dot._stop = s;
       stopDots.set(s.gtfsId, dot);
     }
   }
@@ -226,10 +241,7 @@ function onMapTap(e) {
       best = id;
     }
   }
-  if (best) {
-    const stop = allStops.find((s) => s.gtfsId === best);
-    if (stop) onStopTap(stop);
-  }
+  if (best) onStopTap(stopDots.get(best)._stop);
 }
 
 // ---------- Selected stop ----------
@@ -248,6 +260,9 @@ export function setStop(stop, routes) {
     lines: new Set(routes.map((r) => lineKey(r.mode, r.shortName))),
     colors: new Map(),
     routeLayer: L.layerGroup().addTo(map),
+    patterns: [],
+    lineFilter: null,
+    routeStops: new Map(),
   };
   map.panTo([stop.lat, stop.lon]);
   lastUpdate = "";
@@ -256,24 +271,42 @@ export function setStop(stop, routes) {
 }
 
 /**
- * Draw the routes through the selected stop
- * (patterns: [{ line, mode, headsign, points }]), one colour per line.
+ * Give the map the routes through the selected stop
+ * (patterns: [{ line, mode, headsign, points, stops }]); one colour per line.
  */
 export function showStopRoutes(patterns) {
   if (!selected) return;
-  selected.routeLayer.clearLayers();
+  selected.patterns = patterns;
   selected.colors.clear();
   for (const p of patterns) {
     const key = lineKey(p.mode, p.line);
     if (!selected.colors.has(key)) {
       selected.colors.set(key, LINE_COLORS[selected.colors.size % LINE_COLORS.length]);
     }
+  }
+  drawSelection();
+}
+
+/** Show only one line (mode + line number), or all lines again with null. */
+export function setLineFilter(mode, line) {
+  if (!selected) return;
+  selected.lineFilter = line == null ? null : lineKey(mode, line);
+  drawSelection();
+}
+
+function drawSelection() {
+  selected.routeLayer.clearLayers();
+  selected.routeStops.clear();
+  for (const p of selected.patterns) {
+    const key = lineKey(p.mode, p.line);
+    if (selected.lineFilter && key !== selected.lineFilter) continue;
     const color = selected.colors.get(key);
     // White outline underneath so lines stay visible over the map.
     L.polyline(p.points, { color: "#fff", weight: 8, opacity: 0.9, interactive: false }).addTo(selected.routeLayer);
     L.polyline(p.points, { color, weight: 4, opacity: 0.9 })
       .bindPopup(`<strong>Line ${escapeHtml(p.line)}</strong><br>→ ${escapeHtml(p.headsign)}`)
       .addTo(selected.routeLayer);
+    for (const st of p.stops) selected.routeStops.set(st.gtfsId, st);
   }
   render();
 }
