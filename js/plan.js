@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getTltAgencyId, inTallinnArea } from "./peatus.js?v=12";
-import { searchPlaces } from "./geocode.js?v=12";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=13";
+import { searchPlaces } from "./geocode.js?v=13";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=12";
-import { lineKey } from "./vehicles.js?v=12";
+} from "./map.js?v=13";
+import { lineKey } from "./vehicles.js?v=13";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -284,6 +284,29 @@ function leavesTallinn() {
   return !inTallinnArea(ends.from) || !inTallinnArea(ends.to);
 }
 
+// Whether the server accepts the "banned operators" option (found out on first use).
+let bannedSupported = true;
+
+/**
+ * Trips using only Tallinna Linnatransport. First asks the server to leave
+ * other operators out; if it doesn't support that, asks for more trips and
+ * keeps those that use TLT only. Either way, the result is checked.
+ */
+async function planCityOnly(when, arriveBy) {
+  let trips = null;
+  if (bannedSupported) {
+    try {
+      const others = await getNonTltAgencyIds();
+      trips = await planTrip(ends.from, ends.to, when, arriveBy, { bannedAgencies: others.join(",") });
+    } catch (err) {
+      if (!/UnknownArgument|FieldUndefined|WrongType|banned/i.test(err.message)) throw err;
+      bannedSupported = false;
+    }
+  }
+  if (!trips) trips = await planTrip(ends.from, ends.to, when, arriveBy, { count: 12 });
+  return trips.filter((it) => it.legs.every((l) => !l.transit || isTlt(l.operator))).slice(0, 5);
+}
+
 async function runPlan() {
   if (!ends.from || !ends.to) {
     hideSheet();
@@ -293,8 +316,9 @@ async function runPlan() {
   planMessage("Searching for trips…");
   const { when, arriveBy } = planTime();
   try {
-    const onlyAgency = cityOnly() ? await getTltAgencyId() : null;
-    const result = await planTrip(ends.from, ends.to, when, arriveBy, onlyAgency);
+    const result = cityOnly()
+      ? await planCityOnly(when, arriveBy)
+      : await planTrip(ends.from, ends.to, when, arriveBy);
     if (run !== planRun) return;
     itineraries = result;
     showList();

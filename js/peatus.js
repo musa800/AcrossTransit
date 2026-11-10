@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=12";
+import { fetchChecked } from "./net.js?v=13";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -74,19 +74,22 @@ export async function getStopsInBox(box) {
   return data.stopsByBbox || [];
 }
 
-let tltAgencyPromise = null;
+/** True if an operator name is Tallinna Linnatransport. */
+export function isTlt(operatorName) {
+  return /tallinna linnatransport/i.test(operatorName || "");
+}
 
-/** The id of Tallinna Linnatransport in the national data (looked up once). */
-export function getTltAgencyId() {
-  if (!tltAgencyPromise) {
-    tltAgencyPromise = gql(`{ agencies { gtfsId name } }`).then((data) => {
-      const tlt = (data.agencies || []).find((a) => /tallinna linnatransport/i.test(a.name));
-      if (!tlt) throw new Error("Tallinna Linnatransport not found in the timetable data");
-      return tlt.gtfsId;
-    });
-    tltAgencyPromise.catch(() => (tltAgencyPromise = null)); // allow a retry later
+let otherAgenciesPromise = null;
+
+/** Ids of every operator except Tallinna Linnatransport (looked up once). */
+export function getNonTltAgencyIds() {
+  if (!otherAgenciesPromise) {
+    otherAgenciesPromise = gql(`{ agencies { gtfsId name } }`).then((data) =>
+      (data.agencies || []).filter((a) => !isTlt(a.name)).map((a) => a.gtfsId)
+    );
+    otherAgenciesPromise.catch(() => (otherAgenciesPromise = null)); // allow a retry later
   }
-  return tltAgencyPromise;
+  return otherAgenciesPromise;
 }
 
 /** Next departures at a stop, plus the lines (routes) that serve it. */
@@ -250,15 +253,18 @@ export function decodePolyline(str) {
  *   { transit, mode, line, headsign, operator, start, end, distance, duration,
  *     from: {name, lat, lon}, to: {name, lat, lon}, stops, points }
  */
-export async function planTrip(from, to, when, arriveBy = false, onlyAgency = null) {
+export async function planTrip(from, to, when, arriveBy = false, options = {}) {
+  const { bannedAgencies = null, count = 5 } = options;
   const pad = (n) => String(n).padStart(2, "0");
   const date = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
   const time = `${pad(when.getHours())}:${pad(when.getMinutes())}:00`;
   const data = await gql(
+    // The "banned" part is only added when needed, so ordinary trips never
+    // depend on an option this server might not support.
     `query ($from: InputCoordinates!, $to: InputCoordinates!, $date: String!, $time: String!,
-            $arriveBy: Boolean!, $whiteListed: InputFilters) {
+            $arriveBy: Boolean!, $count: Int!${bannedAgencies ? ", $banned: String!" : ""}) {
        plan(from: $from, to: $to, date: $date, time: $time, arriveBy: $arriveBy,
-            numItineraries: 5, whiteListed: $whiteListed) {
+            numItineraries: $count${bannedAgencies ? ", banned: { agencies: $banned }" : ""}) {
          itineraries {
            startTime endTime duration walkDistance
            legs {
@@ -279,7 +285,8 @@ export async function planTrip(from, to, when, arriveBy = false, onlyAgency = nu
       date,
       time,
       arriveBy,
-      whiteListed: onlyAgency ? { agencies: onlyAgency } : null,
+      count,
+      ...(bannedAgencies ? { banned: bannedAgencies } : {}),
     }
   );
   return (data.plan?.itineraries || []).map((it) => ({
