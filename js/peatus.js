@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=9";
+import { fetchChecked } from "./net.js?v=10";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -201,4 +201,62 @@ export function decodePolyline(str) {
     points.push([lat / 1e5, lon / 1e5]);
   }
   return points;
+}
+
+/**
+ * Plan a trip with transfers.
+ * from/to: { lat, lon }; when: JS Date; arriveBy: true = arrive by `when`.
+ * Returns itineraries: [{ start, end, duration, walkDistance, legs: [...] }]
+ * with times in Unix seconds. Each leg:
+ *   { transit, mode, line, headsign, start, end, distance, duration,
+ *     from: {name, lat, lon}, to: {name, lat, lon}, stops, points }
+ */
+export async function planTrip(from, to, when, arriveBy = false) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const date = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
+  const time = `${pad(when.getHours())}:${pad(when.getMinutes())}:00`;
+  const data = await gql(
+    `query ($from: InputCoordinates!, $to: InputCoordinates!, $date: String!, $time: String!, $arriveBy: Boolean!) {
+       plan(from: $from, to: $to, date: $date, time: $time, arriveBy: $arriveBy, numItineraries: 5) {
+         itineraries {
+           startTime endTime duration walkDistance
+           legs {
+             mode transitLeg startTime endTime distance duration headsign
+             route { shortName mode }
+             from { name lat lon }
+             to { name lat lon }
+             intermediateStops { name }
+             legGeometry { points }
+           }
+         }
+       }
+     }`,
+    {
+      from: { lat: from.lat, lon: from.lon },
+      to: { lat: to.lat, lon: to.lon },
+      date,
+      time,
+      arriveBy,
+    }
+  );
+  return (data.plan?.itineraries || []).map((it) => ({
+    start: Math.round(it.startTime / 1000),
+    end: Math.round(it.endTime / 1000),
+    duration: it.duration,
+    walkDistance: it.walkDistance || 0,
+    legs: (it.legs || []).map((l) => ({
+      transit: !!l.transitLeg,
+      mode: l.route?.mode || l.mode,
+      line: l.route?.shortName || "",
+      headsign: l.headsign || "",
+      start: Math.round(l.startTime / 1000),
+      end: Math.round(l.endTime / 1000),
+      distance: l.distance || 0,
+      duration: l.duration || 0,
+      from: l.from,
+      to: l.to,
+      stops: (l.intermediateStops || []).length + 1,
+      points: decodePolyline(l.legGeometry?.points || ""),
+    })),
+  }));
 }

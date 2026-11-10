@@ -4,11 +4,12 @@
 import {
   searchStops, getStopDepartures, getTallinnStops, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule,
-} from "./peatus.js?v=9";
+} from "./peatus.js?v=10";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
-  setStops, showStopRoutes, setLineFilter, lineColor,
-} from "./map.js?v=9";
+  setStops, showStopRoutes, setLineFilter, lineColor, setMode,
+} from "./map.js?v=10";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=10";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -38,10 +39,28 @@ function switchTab(tab) {
   for (const btn of document.querySelectorAll(".tab-btn")) {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   }
+  const onMap = tab === "map" || tab === "plan";
   $("stops-view").hidden = tab !== "stops";
-  $("map-view").hidden = tab !== "map";
-  if (tab === "map") showMap();
-  else hideMap();
+  $("map-view").hidden = !onMap;
+  $("map-view").classList.toggle("plan-mode", tab === "plan");
+  if (onMap) {
+    setMode(tab === "plan" ? "plan" : "stops");
+    updateLayout(false);
+    showMap();
+  } else {
+    hideMap();
+  }
+}
+
+/** Shrink the map when the bottom panel of the current tab is open. */
+function updateLayout(resize = true) {
+  const open =
+    activeTab === "map" ? !$("stop-sheet").hidden :
+    activeTab === "plan" ? isPlanSheetOpen() : false;
+  const view = $("map-view");
+  if (view.classList.contains("sheet-open") === open) return;
+  view.classList.toggle("sheet-open", open);
+  if (resize) resizeMap();
 }
 
 for (const btn of document.querySelectorAll(".tab-btn")) {
@@ -261,10 +280,8 @@ function closeStop() {
 }
 
 function setSheetOpen(open) {
-  const wasOpen = !$("stop-sheet").hidden;
   $("stop-sheet").hidden = !open;
-  $("map-view").classList.toggle("sheet-open", open);
-  if (wasOpen !== open && activeTab === "map") resizeMap();
+  if (activeTab === "map") updateLayout();
 }
 
 $("back-btn").addEventListener("click", closeStop);
@@ -389,6 +406,9 @@ for (const b of document.querySelectorAll(".day-btn")) {
 // ---------- Map ----------
 
 initMap($("map"), mapStatus);
+initPlanner(() => {
+  if (activeTab === "plan") updateLayout();
+});
 
 // Load all Tallinn stops once; the map shows those within 2 km of its centre.
 getTallinnStops()
@@ -399,5 +419,5 @@ $("centre-btn").addEventListener("click", () => centreOnMe((msg) => mapStatus(ms
 
 // Resume updates when the app comes back from the background.
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && activeTab === "map") showMap();
+  if (!document.hidden && (activeTab === "map" || activeTab === "plan")) showMap();
 });
