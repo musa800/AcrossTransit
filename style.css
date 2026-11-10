@@ -193,7 +193,6 @@ p { margin: 4px 0; }
 .vehicle.TROLLEYBUS { background: var(--trolleybus); }
 .vehicle.TRAM { background: var(--tram); }
 .vehicle.OTHER { background: var(--other); }
-.vehicle.dim { opacity: 0.25; transform: scale(0.75); }
 .v-label { position: relative; z-index: 1; }
 .v-arrow {
   position: absolute;

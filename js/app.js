@@ -1,7 +1,7 @@
 // Screen: tabs, stop search, departures list. Wires everything together.
 
-import { searchStops, getStopDepartures } from "./peatus.js";
-import { initMap, showMap, hideMap, setStop, clearStop, centreOnMe } from "./map.js";
+import { searchStops, getStopDepartures } from "./peatus.js?v=4";
+import { initMap, showMap, hideMap, setStop, clearStop, centreOnMe } from "./map.js?v=4";
 
 const DEPARTURES_REFRESH_MS = 30000;
 

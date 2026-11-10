@@ -20,3 +20,7 @@ https://musa800.github.io/AcrossTransit/
 ## Code layout
 - `js/peatus.js`, `js/vehicles.js`, `js/net.js` — data only (reusable, e.g. in Across Town)
 - `js/map.js`, `js/app.js` — screens
+
+## Updating
+When changing any JS or CSS file, bump the `?v=` number everywhere
+(index.html and the `import` lines in js/) so browsers load the new code.

@@ -1,15 +1,20 @@
 // Screen: the Leaflet map with live vehicles, the selected stop and the
 // user's own position.
 
-import { getVehicles, lineKey } from "./vehicles.js";
+import { getVehicles, lineKey } from "./vehicles.js?v=4";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
+// Limits that keep the map smooth on phones:
+const MIN_ZOOM = 14;     // below this, vehicles are hidden unless a stop is selected
+const MAX_VEHICLES = 80; // at most this many markers, nearest to the map centre
 
 let map;
 const vehicleMarkers = new Map(); // vehicle id -> Leaflet marker
 let stopMarker = null;
-let highlight = null; // Set of line keys, or null for "show all normally"
+let highlight = null; // Set of line keys of the selected stop, or null
+let lastVehicles = [];  // latest feed, kept so panning can redraw without refetching
+let lastUpdate = "";
 let meMarker = null;
 let myPos = null;
 let watchId = null;
@@ -24,6 +29,7 @@ export function initMap(el, statusCallback) {
     maxZoom: 19,
     attribution: "© OpenStreetMap contributors",
   }).addTo(map);
+  map.on("moveend", render);
 }
 
 /** Call when the map becomes visible (it can't measure itself while hidden). */
@@ -41,14 +47,14 @@ export function hideMap() {
 
 // ---------- Vehicles ----------
 
-function vehicleIcon(v, dim) {
+function vehicleIcon(v) {
   const arrow =
     v.heading === null
       ? ""
       : `<span class="v-arrow" style="transform: rotate(${v.heading}deg)"></span>`;
   return L.divIcon({
     className: "",
-    html: `<div class="vehicle ${v.mode}${dim ? " dim" : ""}">${arrow}<span class="v-label">${escapeHtml(v.line)}</span></div>`,
+    html: `<div class="vehicle ${v.mode}">${arrow}<span class="v-label">${escapeHtml(v.line)}</span></div>`,
     iconSize: [30, 30],
     iconAnchor: [15, 15],
   });
@@ -62,43 +68,69 @@ function popupText(v) {
 
 async function refresh() {
   if (document.hidden) return;
-  let vehicles;
   try {
-    vehicles = await getVehicles();
+    lastVehicles = await getVehicles();
   } catch (err) {
     onStatus(`Couldn't load live vehicles: ${err.message}`, true);
     return;
   }
+  lastUpdate = new Date().toLocaleTimeString("et-EE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  render();
+}
 
-  const seen = new Set();
-  let shown = 0;
-  for (const v of vehicles) {
-    seen.add(v.id);
-    const dim = highlight !== null && !highlight.has(lineKey(v.mode, v.line));
-    if (!dim) shown++;
+/** Decide which vehicles to show and update only the markers that changed. */
+function render() {
+  if (!map) return;
+  const zoom = map.getZoom();
+  const bounds = map.getBounds().pad(0.2);
+  let visible = [];
+
+  if (highlight !== null || zoom >= MIN_ZOOM) {
+    visible = lastVehicles.filter(
+      (v) =>
+        (highlight === null || highlight.has(lineKey(v.mode, v.line))) &&
+        bounds.contains([v.lat, v.lon])
+    );
+    if (visible.length > MAX_VEHICLES) {
+      const c = map.getCenter();
+      const d = (v) => (v.lat - c.lat) ** 2 + ((v.lon - c.lng) * 0.5) ** 2;
+      visible.sort((a, b) => d(a) - d(b));
+      visible = visible.slice(0, MAX_VEHICLES);
+    }
+  }
+
+  const keep = new Set();
+  for (const v of visible) {
+    keep.add(v.id);
+    const sig = `${v.mode}|${v.line}|${v.heading}`;
     let m = vehicleMarkers.get(v.id);
     if (!m) {
-      m = L.marker([v.lat, v.lon], { icon: vehicleIcon(v, dim) }).addTo(map);
+      m = L.marker([v.lat, v.lon], { icon: vehicleIcon(v), zIndexOffset: 1000 }).addTo(map);
       m.bindPopup(popupText(v));
+      m._sig = sig;
       vehicleMarkers.set(v.id, m);
     } else {
       m.setLatLng([v.lat, v.lon]);
-      m.setIcon(vehicleIcon(v, dim));
-      m.setPopupContent(popupText(v));
+      if (m._sig !== sig) {
+        m.setIcon(vehicleIcon(v));
+        m.setPopupContent(popupText(v));
+        m._sig = sig;
+      }
     }
-    m.setZIndexOffset(dim ? 0 : 1000);
   }
-  // Remove vehicles that left the feed.
   for (const [id, m] of vehicleMarkers) {
-    if (!seen.has(id)) {
+    if (!keep.has(id)) {
       m.remove();
       vehicleMarkers.delete(id);
     }
   }
 
-  const time = new Date().toLocaleTimeString("et-EE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const count = highlight === null ? `${vehicles.length} vehicles` : `${shown} on this stop's lines`;
-  onStatus(`${count} · updated ${time}`, false);
+  if (!lastUpdate) return;
+  let text;
+  if (highlight === null && zoom < MIN_ZOOM) text = "Zoom in to see vehicles";
+  else if (highlight !== null) text = `${visible.length} on this stop's lines in view`;
+  else text = `${visible.length} vehicles in view`;
+  onStatus(`${text} · updated ${lastUpdate}`, false);
 }
 
 // ---------- Selected stop ----------
@@ -114,6 +146,7 @@ export function setStop(stop, routes) {
     .addTo(map)
     .bindPopup(`<strong>${escapeHtml(stop.name)}</strong>`);
   map.setView([stop.lat, stop.lon], 15);
+  render();
 }
 
 export function clearStop() {
@@ -122,6 +155,7 @@ export function clearStop() {
     stopMarker.remove();
     stopMarker = null;
   }
+  render();
 }
 
 // ---------- My position ----------
