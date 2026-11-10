@@ -1,7 +1,7 @@
 // Screen: the Leaflet map with live vehicles, stops, the selected stop and
 // the user's own position.
 
-import { getVehicles, lineKey } from "./vehicles.js?v=6";
+import { getVehicles, lineKey } from "./vehicles.js?v=7";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -43,8 +43,34 @@ export function initMap(el, statusCallback) {
     maxZoom: 19,
     attribution: "© OpenStreetMap contributors",
   }).addTo(map);
-  stopRenderer = L.canvas({ padding: 0.3 });
+  // Layers, bottom to top: routes → vehicles → stops → selected stop → popups.
+  // The stops layer lets taps pass through (so buses under it stay tappable);
+  // stop taps are found by position in onMapTap instead.
+  const stopsPane = map.createPane("stopsPane");
+  stopsPane.style.zIndex = 650;
+  stopsPane.style.pointerEvents = "none";
+  map.createPane("selectedPane").style.zIndex = 660;
+  stopRenderer = L.canvas({ padding: 0.3, pane: "stopsPane" });
   map.on("moveend", render);
+  map.on("click", onMapTap);
+}
+
+/** A tap on the map (not on a bus): open the nearest stop dot, if close enough. */
+function onMapTap(e) {
+  const p = e.containerPoint;
+  let best = null;
+  let bestDist = 22; // pixels
+  for (const [id, dot] of stopDots) {
+    const d = p.distanceTo(map.latLngToContainerPoint(dot.getLatLng()));
+    if (d < bestDist) {
+      bestDist = d;
+      best = id;
+    }
+  }
+  if (best) {
+    const stop = allStops.find((s) => s.gtfsId === best);
+    if (stop) onStopTap(stop);
+  }
 }
 
 /** Call when the map becomes visible (it can't measure itself while hidden). */
@@ -155,20 +181,29 @@ function renderVehicles(center, tooWide) {
   for (const v of visible) {
     keep.add(v.id);
     const color = selected?.colors.get(lineKey(v.mode, v.line)) || "";
-    const sig = `${v.mode}|${v.line}|${v.heading}|${color}`;
+    // Only these require building a new marker; heading and destination are updated in place.
+    const base = `${v.mode}|${v.line}|${color}|${v.heading === null ? "no-arrow" : "arrow"}`;
     let m = vehicleMarkers.get(v.id);
-    if (!m) {
+    if (!m || m._base !== base) {
+      if (m) m.remove();
       m = L.marker([v.lat, v.lon], { icon: vehicleIcon(v, color), zIndexOffset: 1000 }).addTo(map);
       m.bindPopup(popupText(v));
-      m._sig = sig;
+      m._base = base;
+      m._heading = v.heading;
+      m._dest = v.destination;
       vehicleMarkers.set(v.id, m);
-    } else {
-      m.setLatLng([v.lat, v.lon]);
-      if (m._sig !== sig) {
-        m.setIcon(vehicleIcon(v, color));
-        m.setPopupContent(popupText(v));
-        m._sig = sig;
-      }
+      continue;
+    }
+    const pos = m.getLatLng();
+    if (pos.lat !== v.lat || pos.lng !== v.lon) m.setLatLng([v.lat, v.lon]);
+    if (m._heading !== v.heading) {
+      const arrow = m.getElement()?.querySelector(".v-arrow");
+      if (arrow) arrow.style.transform = `rotate(${v.heading}deg)`;
+      m._heading = v.heading;
+    }
+    if (m._dest !== v.destination) {
+      m.setPopupContent(popupText(v));
+      m._dest = v.destination;
     }
   }
   for (const [id, m] of vehicleMarkers) {
@@ -208,13 +243,14 @@ function renderStops(center, tooWide) {
       if (stopDots.has(s.gtfsId)) continue;
       const dot = L.circleMarker([s.lat, s.lon], {
         renderer: stopRenderer,
+        pane: "stopsPane",
+        interactive: false,
         radius: 6,
         color: "#ffffff",
         weight: 2,
         fillColor: "#3a3f47",
         fillOpacity: 1,
       }).addTo(map);
-      dot.on("click", () => onStopTap(s));
       stopDots.set(s.gtfsId, dot);
     }
   }
@@ -236,7 +272,7 @@ export function setStop(stop, routes, recenter = true) {
   clearStop(false);
   const marker = L.marker([stop.lat, stop.lon], {
     icon: L.divIcon({ className: "", html: `<div class="stop-pin"></div>`, iconSize: [22, 22], iconAnchor: [11, 11] }),
-    zIndexOffset: 2000,
+    pane: "selectedPane",
   }).addTo(map);
   marker.on("click", () => onStopTap(stop));
   selected = {

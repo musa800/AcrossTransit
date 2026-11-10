@@ -1,10 +1,10 @@
 // Screen: tabs, stop search, departures list. Wires everything together.
 
-import { searchStops, getStopDepartures, getTallinnStops, getStopPatterns } from "./peatus.js?v=6";
+import { searchStops, getStopDepartures, getTallinnStops, getStopPatterns } from "./peatus.js?v=7";
 import {
   initMap, showMap, hideMap, setStop, clearStop, centreOnMe,
   setStops, showStopPopup, showStopRoutes, toggleVehicleRadius,
-} from "./map.js?v=6";
+} from "./map.js?v=7";
 
 const DEPARTURES_REFRESH_MS = 30000;
 
