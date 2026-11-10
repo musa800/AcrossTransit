@@ -2,7 +2,7 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=16";
+import { getVehicles, lineKey } from "./vehicles.js?v=17";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -75,7 +75,12 @@ export function initMap(el, statusCallback) {
 
   map.on("moveend", render);
   map.on("click", onMapTap);
+  // Leaflet closes an open popup just before the tap reaches onMapTap;
+  // remember when, so that tap only closes the popup.
+  map.on("popupclose", () => (lastPopupClose = Date.now()));
 }
+
+let lastPopupClose = 0;
 
 /** Switch between "stops" and "plan". Each mode keeps its own state. */
 export function setMode(newMode) {
@@ -349,6 +354,7 @@ function renderStops(hide) {
 
 /** A tap on the map (not on a bus or a line): find the nearest stop dot, if close enough. */
 function onMapTap(e) {
+  if (Date.now() - lastPopupClose < 400) return; // this tap closed a popup
   const p = e.containerPoint;
   let best = null;
   let bestDist = 22; // pixels

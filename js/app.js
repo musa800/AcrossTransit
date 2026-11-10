@@ -4,12 +4,12 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule,
-} from "./peatus.js?v=16";
+} from "./peatus.js?v=17";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, lineColor, setMode,
-} from "./map.js?v=16";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=16";
+} from "./map.js?v=17";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=17";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
