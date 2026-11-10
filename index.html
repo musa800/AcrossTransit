@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tallinn Transit</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Tallinn Transit</h1>
+    <form id="search-form" autocomplete="off">
+      <input id="search-input" type="search" placeholder="Search a stop, e.g. Viru" required>
+      <button type="submit">Search</button>
+    </form>
+  </header>
+
+  <main>
+    <section id="stop-list" hidden>
+      <h2>Stops</h2>
+      <ul id="stops"></ul>
+    </section>
+
+    <section id="departures-panel" hidden>
+      <div class="panel-head">
+        <button id="back-btn" type="button" aria-label="Back to stops">←</button>
+        <div>
+          <h2 id="stop-name"></h2>
+          <p id="stop-meta" class="muted"></p>
+        </div>
+      </div>
+      <ul id="departures"></ul>
+      <p id="updated" class="muted small"></p>
+    </section>
+
+    <p id="message" class="muted"></p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
