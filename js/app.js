@@ -4,15 +4,15 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule, getNearbyDepartures, getStopsPatterns,
-} from "./peatus.js?v=20";
+} from "./peatus.js?v=21";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, lineColor, setMode,
   initLocation, getMyPosition, getLocationError, showRoute, clearRoute,
   showNearRoutes, setNearFilter, clearNearRoutes, setNearStops,
-} from "./map.js?v=20";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=20";
-import { initRoutes, enterRoutes } from "./routes.js?v=20";
+} from "./map.js?v=21";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=21";
+import { initRoutes, enterRoutes } from "./routes.js?v=21";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -339,7 +339,59 @@ $("sheet-close").addEventListener("click", () => {
 
 // ---------- Schedule (one line at this stop, whole day) ----------
 
-let scheduleDay = 0; // 0 = today, 1 = tomorrow
+// Date row: [<] [3 dates] [>]. The arrows move the chosen day by one; the
+// row slides to keep it visible. Today up to 13 days ahead (14 days).
+const SCHED_DAYS = 14;
+const SCHED_VISIBLE = 3;
+let scheduleDay = 0;        // days after today
+let schedWindowStart = 0;   // first day shown in the row
+const schedCache = new Map(); // day -> rows, while the schedule is open
+
+function dayDate(offset) {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0); // midday: safe across daylight-saving changes
+  d.setDate(d.getDate() + offset);
+  return d;
+}
+
+function dayLabel(offset) {
+  if (offset === 0) return "Today";
+  if (offset === 1) return "Tomorrow";
+  const d = dayDate(offset);
+  const wd = d.toLocaleDateString("en-GB", { weekday: "short" });
+  return `${wd} ${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function renderDayRow() {
+  if (scheduleDay < schedWindowStart) schedWindowStart = scheduleDay;
+  if (scheduleDay > schedWindowStart + SCHED_VISIBLE - 1) schedWindowStart = scheduleDay - SCHED_VISIBLE + 1;
+  const row = $("sched-days");
+  row.innerHTML = "";
+  const prev = document.createElement("button");
+  prev.type = "button";
+  prev.className = "day-arrow";
+  prev.textContent = "<";
+  prev.setAttribute("aria-label", "Previous day");
+  prev.disabled = scheduleDay === 0;
+  prev.addEventListener("click", () => loadSchedule(scheduleDay - 1));
+  row.appendChild(prev);
+  for (let i = schedWindowStart; i < schedWindowStart + SCHED_VISIBLE && i < SCHED_DAYS; i++) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "day-btn" + (i === scheduleDay ? " active" : "");
+    b.textContent = dayLabel(i);
+    b.addEventListener("click", () => loadSchedule(i));
+    row.appendChild(b);
+  }
+  const next = document.createElement("button");
+  next.type = "button";
+  next.className = "day-arrow";
+  next.textContent = ">";
+  next.setAttribute("aria-label", "Next day");
+  next.disabled = scheduleDay === SCHED_DAYS - 1;
+  next.addEventListener("click", () => loadSchedule(scheduleDay + 1));
+  row.appendChild(next);
+}
 
 function openSchedule() {
   if (!currentStop || !selectedLine) return;
@@ -347,6 +399,8 @@ function openSchedule() {
   $("sched-stop").textContent = currentStop.name;
   const badge = $("sched-badge");
   badge.replaceWith(Object.assign(makeBadge(selectedLine.shortName, selectedLine.mode), { id: "sched-badge" }));
+  schedCache.clear();
+  schedWindowStart = 0;
   $("schedule-view").hidden = false;
   loadSchedule(0);
 }
@@ -356,22 +410,26 @@ function closeSchedule() {
 }
 
 async function loadSchedule(dayOffset) {
+  dayOffset = Math.max(0, Math.min(SCHED_DAYS - 1, dayOffset));
   scheduleDay = dayOffset;
-  for (const b of document.querySelectorAll(".day-btn")) {
-    b.classList.toggle("active", Number(b.dataset.day) === dayOffset);
-  }
-  const date = new Date();
-  date.setDate(date.getDate() + dayOffset);
+  renderDayRow();
   const body = $("sched-body");
-  body.innerHTML = `<p class="muted">Loading…</p>`;
   $("sched-legend").innerHTML = "";
+  if (schedCache.has(dayOffset)) {
+    renderSchedule(schedCache.get(dayOffset), dayOffset === 0);
+    return;
+  }
+  body.innerHTML = `<p class="muted">Loading…</p>`;
   const stop = currentStop;
   const line = selectedLine;
   try {
-    const rows = await getStopLineSchedule(stop.gtfsId, line.mode, line.shortName, date);
-    if (stop !== currentStop || line !== selectedLine || dayOffset !== scheduleDay) return;
+    const rows = await getStopLineSchedule(stop.gtfsId, line.mode, line.shortName, dayDate(dayOffset));
+    if (stop !== currentStop || line !== selectedLine) return;
+    schedCache.set(dayOffset, rows);
+    if (dayOffset !== scheduleDay) return;
     renderSchedule(rows, dayOffset === 0);
   } catch (err) {
+    if (dayOffset !== scheduleDay) return;
     body.innerHTML = "";
     const p = document.createElement("p");
     p.className = "muted";
@@ -386,7 +444,12 @@ function renderSchedule(rows, isToday) {
   body.innerHTML = "";
   legend.innerHTML = "";
   if (!rows.length) {
-    body.innerHTML = `<p class="muted">No departures of this line from this stop on that day.</p>`;
+    body.innerHTML = "";
+    const p = document.createElement("p");
+    p.className = "muted";
+    const when = scheduleDay === 0 ? "today" : scheduleDay === 1 ? "tomorrow" : `on ${dayLabel(scheduleDay)}`;
+    p.textContent = `No departures of this line from this stop ${when}.`;
+    body.appendChild(p);
     return;
   }
 
@@ -445,9 +508,6 @@ function renderSchedule(rows, isToday) {
 }
 
 $("sched-back").addEventListener("click", closeSchedule);
-for (const b of document.querySelectorAll(".day-btn")) {
-  b.addEventListener("click", () => loadSchedule(Number(b.dataset.day)));
-}
 
 // ---------- Map ----------
 

@@ -566,3 +566,16 @@ p { margin: 4px 0; }
 }
 .route-stop-n { width: 24px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
 #route-back { padding: 6px 12px; background: var(--line); color: var(--text); }
+
+/* Schedule date row: [<] [Today] [Tomorrow] [Thu 12.11] [>] */
+.sched-days { align-items: center; gap: 6px; }
+.sched-days .day-btn { flex: 1; min-width: 0; padding: 6px 4px; white-space: nowrap; font-size: 0.85rem; }
+.day-arrow {
+  flex: none;
+  width: 36px;
+  padding: 6px 0;
+  background: var(--line);
+  color: var(--text);
+  font-weight: 700;
+}
+.day-arrow:disabled { opacity: 0.35; cursor: default; }

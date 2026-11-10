@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-title" content="AcrossTransit">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="style.css?v=20">
+  <link rel="stylesheet" href="style.css?v=21">
 </head>
 <body>
   <div id="offline-banner" class="offline-banner" hidden>You're offline. Departures, buses and the map need a connection.</div>
@@ -162,10 +162,7 @@
         <p id="sched-stop" class="muted small"></p>
       </div>
     </div>
-    <div class="day-btns">
-      <button class="day-btn active" data-day="0" type="button">Today</button>
-      <button class="day-btn" data-day="1" type="button">Tomorrow</button>
-    </div>
+    <div id="sched-days" class="day-btns sched-days"></div>
     <div id="sched-legend" class="sched-legend"></div>
     <div id="sched-body" class="sched-body"></div>
   </section>
@@ -178,6 +175,6 @@
   </nav>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script type="module" src="js/app.js?v=20"></script>
+  <script type="module" src="js/app.js?v=21"></script>
 </body>
 </html>
