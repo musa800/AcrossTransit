@@ -2,7 +2,7 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=21";
+import { getVehicles, lineKey } from "./vehicles.js?v=22";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -78,12 +78,15 @@ export function initMap(el, statusCallback) {
   stopsPane.style.zIndex = 650;
   stopsPane.style.pointerEvents = "none";
   map.createPane("selectedPane").style.zIndex = 660;
-  stopRenderer = L.canvas({ padding: 0.3, pane: "stopsPane" });
+  // Extra margin: the canvas only fully redraws when a drag ends, so draw
+  // further beyond the screen edge to cover dots revealed while dragging.
+  stopRenderer = L.canvas({ padding: 0.6, pane: "stopsPane" });
 
   plan.layer = L.layerGroup();
   plan.endpoints = L.layerGroup();
 
   map.on("moveend", render);
+  map.on("move", onMoving);
   map.on("click", onMapTap);
   // Leaflet closes an open popup just before the tap reaches onMapTap;
   // remember when, so that tap only closes the popup.
@@ -339,7 +342,24 @@ export function setPlanTapHandler(cb) {
   onPlanTap = cb;
 }
 
-function renderStops(hide) {
+// While the map is being dragged: update stop dots about 8 times a second,
+// and load new squares of stops at most every 300 ms. Buses and lines wait
+// until the drag ends (moveend → render).
+const MOVE_DRAW_MS = 120;
+const MOVE_LOAD_MS = 300;
+let lastMoveDraw = 0;
+let lastMoveLoad = 0;
+
+function onMoving() {
+  const now = performance.now();
+  if (now - lastMoveDraw < MOVE_DRAW_MS) return;
+  lastMoveDraw = now;
+  const load = now - lastMoveLoad >= MOVE_LOAD_MS;
+  if (load) lastMoveLoad = now;
+  renderStops(tooWide(), { moving: true, load });
+}
+
+function renderStops(hide, { moving = false, load = true } = {}) {
   const center = map.getCenter();
   const keep = new Set();
   // Which stop dots to show:
@@ -358,7 +378,9 @@ function renderStops(hide) {
   const stopOnly = stopsMode && selected && !selected.lineFilter;
   const small = tripView || wholeRoute || nearLine || stopLine;
   const limited = small || nearCircle || stopOnly; // no 2 km rule, no loading
-  if (!hide && !limited) ensureCells(center);
+  // A fixed set of stops is shown (chosen stop, route, trip, Near me): nothing to update while dragging.
+  if (moving && limited) return;
+  if (!hide && !limited && load) ensureCells(center);
   const source = tripView
     ? plan.tripStops
     : wholeRoute

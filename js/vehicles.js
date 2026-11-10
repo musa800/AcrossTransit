@@ -7,7 +7,7 @@
 // lon/lat: whole numbers in microdegrees (divide by 1,000,000)
 // heading: degrees, 999 = unknown
 
-import { fetchChecked } from "./net.js?v=21";
+import { fetchChecked } from "./net.js?v=22";
 
 // The city's feed blocks requests from other websites (CORS), so the app
 // reads it through our Cloudflare Worker relay (see relay/cloudflare-worker.js).
