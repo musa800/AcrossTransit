@@ -4,12 +4,12 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule,
-} from "./peatus.js?v=13";
+} from "./peatus.js?v=14";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, lineColor, setMode,
-} from "./map.js?v=13";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=13";
+} from "./map.js?v=14";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=14";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -53,12 +53,12 @@ function switchTab(tab) {
 }
 
 /** Shrink the map when the bottom panel of the current tab is open. */
-function updateLayout(resize = true) {
+function updateLayout(resize = true, force = false) {
   const open =
     activeTab === "map" ? !$("stop-sheet").hidden :
     activeTab === "plan" ? isPlanSheetOpen() : false;
   const view = $("map-view");
-  if (view.classList.contains("sheet-open") === open) return;
+  if (view.classList.contains("sheet-open") === open && !force) return;
   view.classList.toggle("sheet-open", open);
   if (resize) resizeMap();
 }
@@ -419,7 +419,8 @@ for (const b of document.querySelectorAll(".day-btn")) {
 
 initMap($("map"), mapStatus);
 initPlanner(() => {
-  if (activeTab === "plan") updateLayout();
+  // force: the panel may only have changed height (hidden/shown steps).
+  if (activeTab === "plan") updateLayout(true, true);
 });
 
 // The map loads stops itself, a small area at a time, only when zoomed in.

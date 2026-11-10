@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=13";
-import { searchPlaces } from "./geocode.js?v=13";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=14";
+import { searchPlaces } from "./geocode.js?v=14";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=13";
-import { lineKey } from "./vehicles.js?v=13";
+} from "./map.js?v=14";
+import { lineKey } from "./vehicles.js?v=14";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -54,17 +54,33 @@ function el(tag, cls, text) {
 
 // ---------- Sheet (bottom panel) ----------
 
+/** withBack: the step-by-step view of one trip (has ←, and the hide button). */
 function showSheet(title, withBack) {
   $("plan-sheet").hidden = false;
   $("plan-sheet-title").textContent = title;
   $("plan-back").hidden = !withBack;
+  $("plan-collapse").hidden = !withBack;
+  if (!withBack) setCollapsed(false, false);
   onLayoutChange();
 }
 
 function hideSheet() {
+  setCollapsed(false, false);
   if ($("plan-sheet").hidden) return;
   $("plan-sheet").hidden = true;
   onLayoutChange();
+}
+
+/** Hide the search box and the steps (keeping the panel's top row and trip strip), or bring them back. */
+function setCollapsed(on, notify = true) {
+  const view = $("map-view");
+  if (view.classList.contains("plan-collapsed") === on) return;
+  view.classList.toggle("plan-collapsed", on);
+  const btn = $("plan-collapse");
+  btn.textContent = on ? "⌃" : "⌄";
+  btn.setAttribute("aria-label", on ? "Show search and steps" : "Hide search and steps");
+  if (on) closeSuggest();
+  if (notify) onLayoutChange();
 }
 
 export function isSheetOpen() {
@@ -379,6 +395,9 @@ function showDetails(i) {
   const it = itineraries[i];
   showItinerary(it.legs);
   showSheet(`${clock(it.start)} → ${clock(it.end)} · ${minutes(it.duration)} min`, true);
+  const strip = $("plan-strip");
+  strip.innerHTML = "";
+  strip.appendChild(legStrip(it));
   const colors = colorsForLegs(it.legs);
   const box = $("plan-content");
   box.innerHTML = "";
@@ -474,6 +493,8 @@ export function initPlanner(layoutCallback) {
   $("plan-city-only").addEventListener("change", () => setCityOnly(cityOnly()));
 
   $("plan-back").addEventListener("click", showList);
+  $("plan-collapse").addEventListener("click", () =>
+    setCollapsed(!$("map-view").classList.contains("plan-collapsed")));
   $("plan-close").addEventListener("click", () => {
     clearItinerary();
     hideSheet();

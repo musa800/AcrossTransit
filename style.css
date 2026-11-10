@@ -448,3 +448,12 @@ p { margin: 4px 0; }
 @media (prefers-color-scheme: dark) {
   .hint { background: #3a3215; border-color: #6b5a1d; color: #f1dc9a; }
 }
+
+/* Hide button and collapsed trip view */
+#plan-collapse { padding: 4px 10px; background: var(--line); color: var(--text); border-radius: 999px; font-size: 1rem; }
+.plan-strip { display: none; padding: 0 16px 10px; overflow-x: auto; }
+.plan-strip .leg-strip { flex-wrap: nowrap; white-space: nowrap; }
+#map-view.plan-mode.plan-collapsed { --sheet-h: 92px; }
+#map-view.plan-mode.plan-collapsed #plan-box,
+#map-view.plan-mode.plan-collapsed #plan-content { display: none !important; }
+#map-view.plan-mode.plan-collapsed .plan-strip { display: block; }

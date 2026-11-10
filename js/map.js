@@ -2,7 +2,7 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=13";
+import { getVehicles, lineKey } from "./vehicles.js?v=14";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -43,6 +43,7 @@ const plan = {
   endpoints: null,      // A/B markers
   lines: new Set(),     // line keys of the chosen trip
   colors: new Map(),    // line key -> colour
+  tripStops: [],        // in-between stops of the shown trip's rides
 };
 
 let meMarker = null;
@@ -307,11 +308,15 @@ function renderStops(hide) {
   const keep = new Set();
   // Stop chosen (stops mode): every stop along its routes, small, no distance limit.
   // Otherwise: all stops within 2 km of the centre, normal size.
-  const routeView = mode === "stops" && selected;
+  // Small dots, no distance limit: a chosen stop's route stops, or a shown trip's stops.
+  const tripView = mode === "plan" && plan.tripStops.length > 0;
+  const routeView = (mode === "stops" && selected) || tripView;
   if (!hide && !routeView) ensureCells(center);
-  const source = routeView
-    ? [...selected.routeStops.values()].filter((s) => s.gtfsId !== selected.stop.gtfsId)
-    : stopsById.values();
+  const source = tripView
+    ? plan.tripStops
+    : routeView
+      ? [...selected.routeStops.values()].filter((s) => s.gtfsId !== selected.stop.gtfsId)
+      : stopsById.values();
   if (!hide) {
     for (const s of source) {
       if (!routeView && map.distance(center, [s.lat, s.lon]) > STOP_RADIUS_M) continue;
@@ -355,6 +360,8 @@ function onMapTap(e) {
     }
   }
   const stop = best ? stopDots.get(best)._stop : null;
+  // Stops of a shown trip are for looking at only.
+  if (mode === "plan" && stop && plan.tripStops.length) return;
   if (mode === "plan") onPlanTap(stop ? L.latLng(stop.lat, stop.lon) : e.latlng, stop);
   else if (stop) onStopTap(stop);
 }
@@ -487,6 +494,16 @@ export function showItinerary(legs) {
   plan.layer.clearLayers();
   plan.colors = colorsForLegs(legs);
   plan.lines = new Set(plan.colors.keys());
+  const seen = new Set();
+  plan.tripStops = [];
+  for (const l of legs) {
+    for (const st of l.passStops || []) {
+      const id = st.gtfsId || `${st.lat},${st.lon}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      plan.tripStops.push({ ...st, gtfsId: id });
+    }
+  }
   const all = [];
   for (const l of legs) {
     all.push(...l.points);
@@ -514,6 +531,7 @@ export function showItinerary(legs) {
 
 export function clearItinerary() {
   plan.layer.clearLayers();
+  plan.tripStops = [];
   plan.lines = new Set();
   plan.colors = new Map();
   render();
