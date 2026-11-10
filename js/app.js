@@ -1,20 +1,30 @@
-// Screen: tabs, stop search, departures list. Wires everything together.
+// Screen: tabs, stop search, departures (Stops tab and the map's stop panel).
+// Wires everything together.
 
-import { searchStops, getStopDepartures, getTallinnStops, getStopPatterns } from "./peatus.js?v=7";
+import { searchStops, getStopDepartures, getTallinnStops, getStopPatterns } from "./peatus.js?v=8";
 import {
-  initMap, showMap, hideMap, setStop, clearStop, centreOnMe,
-  setStops, showStopPopup, showStopRoutes, toggleVehicleRadius,
-} from "./map.js?v=7";
+  initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
+  setStops, showStopRoutes, lineColor,
+} from "./map.js?v=8";
 
 const DEPARTURES_REFRESH_MS = 30000;
+const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 
 const $ = (id) => document.getElementById(id);
 let depTimer = null;
 let currentStop = null;
+let currentRoutes = [];
+let lastDepartures = [];
 let activeTab = "stops";
 
 function showMessage(text) {
   $("message").textContent = text || "";
+}
+
+function mapStatus(text, isError) {
+  const el = $("map-status");
+  el.textContent = text;
+  el.classList.toggle("error", !!isError);
 }
 
 // ---------- Tabs ----------
@@ -78,147 +88,161 @@ function formatClock(unixSeconds) {
   return new Date(unixSeconds * 1000).toLocaleTimeString("et-EE", { hour: "2-digit", minute: "2-digit" });
 }
 
-function renderDepartures(deps) {
-  const list = $("departures");
+/** A line badge: the selected stop's line colour if it has one, else the vehicle-type colour. */
+function makeBadge(line, mode, extraClass = "") {
+  const span = document.createElement("span");
+  span.className = `badge ${MODES.includes(mode) ? mode : "OTHER"} ${extraClass}`.trim();
+  span.textContent = line;
+  const color = lineColor(mode, line);
+  if (color) span.style.background = color;
+  return span;
+}
+
+function fillDepartureList(list, deps) {
   list.innerHTML = "";
   const now = Date.now() / 1000;
-  if (!deps.length) list.innerHTML = `<li class="muted">No upcoming departures.</li>`;
-
+  if (!deps.length) {
+    list.innerHTML = `<li class="muted">No upcoming departures.</li>`;
+    return;
+  }
   for (const d of deps) {
     const mins = Math.round((d.time - now) / 60);
-    const mode = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"].includes(d.mode) ? d.mode : "OTHER";
     const li = document.createElement("li");
     li.className = "dep";
-    li.innerHTML = `
-      <span class="badge ${mode}"></span>
-      <span class="headsign"></span>
-      <span class="time"><div class="mins"></div><div class="small muted clock"></div></span>`;
-    li.querySelector(".badge").textContent = d.line;
-    li.querySelector(".headsign").textContent = d.headsign;
-    li.querySelector(".mins").textContent = mins <= 0 ? "now" : `${mins} min`;
-    li.querySelector(".clock").textContent = formatClock(d.time);
+    li.appendChild(makeBadge(d.line, d.mode));
+    const head = document.createElement("span");
+    head.className = "headsign";
+    head.textContent = d.headsign;
+    li.appendChild(head);
+    const time = document.createElement("span");
+    time.className = "time";
+    time.innerHTML = `<div class="mins"></div><div class="small muted clock"></div>`;
+    time.querySelector(".mins").textContent = mins <= 0 ? "now" : `${mins} min`;
+    time.querySelector(".clock").textContent = formatClock(d.time);
+    li.appendChild(time);
     list.appendChild(li);
   }
+}
+
+/** The line chips in the stop panel, sorted by number. */
+function renderLineChips() {
+  const box = $("sheet-lines");
+  box.innerHTML = "";
+  const seen = new Set();
+  const lines = currentRoutes
+    .filter((r) => {
+      const k = `${r.mode}|${r.shortName}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .sort((a, b) => String(a.shortName).localeCompare(String(b.shortName), "et", { numeric: true }));
+  for (const r of lines) box.appendChild(makeBadge(r.shortName, r.mode, "chip-badge"));
+}
+
+function renderAllDepartures() {
+  fillDepartureList($("departures"), lastDepartures);
+  fillDepartureList($("sheet-departures"), lastDepartures);
   $("updated").textContent = "Updated " + new Date().toLocaleTimeString("et-EE");
 }
 
-// Small departures list shown in a popup when a stop is tapped on the map.
-function stopPopup(stop, deps) {
-  const now = Date.now() / 1000;
-  const el = document.createElement("div");
-  el.className = "stop-popup";
-  const title = document.createElement("strong");
-  title.textContent = stop.name;
-  el.appendChild(title);
-  const list = document.createElement("div");
-  list.className = "pop-deps";
-  for (const d of deps.slice(0, 5)) {
-    const mins = Math.round((d.time - now) / 60);
-    const mode = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"].includes(d.mode) ? d.mode : "OTHER";
-    const row = document.createElement("div");
-    row.className = "pop-dep";
-    row.innerHTML = `<span class="badge small-badge ${mode}"></span><span class="headsign"></span><span class="pop-mins"></span>`;
-    row.querySelector(".badge").textContent = d.line;
-    row.querySelector(".headsign").textContent = d.headsign;
-    row.querySelector(".pop-mins").textContent = mins <= 0 ? "now" : `${mins} min`;
-    list.appendChild(row);
-  }
-  if (!deps.length) list.textContent = "No upcoming departures.";
-  el.appendChild(list);
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "pop-btn";
-  btn.textContent = "All departures";
-  btn.addEventListener("click", () => switchTab("stops"));
-  el.appendChild(btn);
-  return el;
-}
-
-async function refreshDepartures(firstLoad = false, fromMap = false) {
+async function refreshDepartures(firstLoad = false) {
   if (!currentStop) return;
   const stop = currentStop;
   try {
-    const { routes, departures } = await getStopDepartures(stop.gtfsId);
+    const { routes, departures } = await getStopDepartures(stop.gtfsId, 20);
     if (stop !== currentStop) return; // another stop was opened meanwhile
-    renderDepartures(departures);
+    lastDepartures = departures;
     if (firstLoad) {
-      setStop(stop, routes, !fromMap);
-      $("map-stop-name").textContent = stop.name;
-      $("map-stop-chip").hidden = false;
-      if (fromMap) showStopPopup(stopPopup(stop, departures));
-      getStopPatterns(stop.gtfsId)
-        .then((patterns) => {
-          if (stop === currentStop) showStopRoutes(patterns);
-        })
-        .catch((err) => {
-          const el = $("map-status");
-          el.textContent = "Couldn't load routes: " + err.message;
-          el.classList.add("error");
-        });
+      currentRoutes = routes;
+      setStop(stop, routes);
+      renderLineChips();
+      loadRoutes(stop);
     }
+    renderAllDepartures();
     showMessage("");
   } catch (err) {
     showMessage("Couldn't load departures: " + err.message);
+    const list = $("sheet-departures");
+    list.innerHTML = "";
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "Couldn't load departures: " + err.message;
+    list.appendChild(li);
   }
 }
 
-function openStop(stop, fromMap = false) {
+function loadRoutes(stop) {
+  getStopPatterns(stop.gtfsId)
+    .then((patterns) => {
+      if (stop !== currentStop) return;
+      showStopRoutes(patterns);
+      // Line colours are known now: recolour chips and badges to match the map.
+      renderLineChips();
+      renderAllDepartures();
+    })
+    .catch((err) => mapStatus("Couldn't load routes: " + err.message, true));
+}
+
+// ---------- Opening and closing a stop ----------
+
+function openStop(stop) {
   currentStop = stop;
+  currentRoutes = [];
+  lastDepartures = [];
+
+  // Stops tab
   $("stop-name").textContent = stop.name;
   $("stop-meta").textContent = stopMeta(stop);
   $("stop-list").hidden = true;
   $("departures-panel").hidden = false;
   $("departures").innerHTML = `<li class="muted">Loading…</li>`;
-  refreshDepartures(true, fromMap);
+
+  // Map panel
+  $("sheet-stop-name").textContent = stop.name;
+  $("sheet-lines").innerHTML = "";
+  $("sheet-departures").innerHTML = `<li class="muted">Loading…</li>`;
+  $("sheet-departures").scrollTop = 0;
+  setSheetOpen(true);
+
+  refreshDepartures(true);
   clearInterval(depTimer);
   depTimer = setInterval(() => refreshDepartures(), DEPARTURES_REFRESH_MS);
 }
 
 function closeStop() {
   currentStop = null;
+  currentRoutes = [];
   clearInterval(depTimer);
   clearStop();
-  $("map-stop-chip").hidden = true;
+  setSheetOpen(false);
   $("departures-panel").hidden = true;
   $("stop-list").hidden = $("stops").children.length === 0;
 }
 
+function setSheetOpen(open) {
+  const wasOpen = !$("stop-sheet").hidden;
+  $("stop-sheet").hidden = !open;
+  $("map-view").classList.toggle("sheet-open", open);
+  if (wasOpen !== open && activeTab === "map") resizeMap();
+}
+
 $("back-btn").addEventListener("click", closeStop);
 $("show-on-map").addEventListener("click", () => switchTab("map"));
-$("map-stop-clear").addEventListener("click", closeStop);
+$("sheet-close").addEventListener("click", closeStop);
 
 // ---------- Map ----------
 
-initMap($("map"), (text, isError) => {
-  const el = $("map-status");
-  el.textContent = text;
-  el.classList.toggle("error", isError);
-});
+initMap($("map"), mapStatus);
 
 // Load all Tallinn stops once; the map shows those within 2 km of its centre.
 getTallinnStops()
-  .then((stops) => setStops(stops, (stop) => openStop(stop, true)))
-  .catch((err) => {
-    const el = $("map-status");
-    el.textContent = "Couldn't load stops: " + err.message;
-    el.classList.add("error");
-  });
+  .then((stops) => setStops(stops, openStop))
+  .catch((err) => mapStatus("Couldn't load stops: " + err.message, true));
 
-$("radius-btn").addEventListener("click", () => {
-  const on = toggleVehicleRadius();
-  $("radius-btn").classList.toggle("active", on);
-  $("radius-btn").setAttribute("aria-pressed", on);
-});
+$("centre-btn").addEventListener("click", () => centreOnMe((msg) => mapStatus(msg, true)));
 
-$("centre-btn").addEventListener("click", () =>
-  centreOnMe((msg) => {
-    const el = $("map-status");
-    el.textContent = msg;
-    el.classList.add("error");
-  })
-);
-
-// Pause/resume updates when the app goes to the background.
+// Resume updates when the app comes back from the background.
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && activeTab === "map") showMap();
 });

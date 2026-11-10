@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Tallinn Transit</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
   <!-- Stops tab -->
@@ -43,13 +43,18 @@
   <!-- Map tab -->
   <div id="map-view" class="view" hidden>
     <div id="map"></div>
-    <div id="map-stop-chip" class="chip" hidden>
-      <span>Stop: <strong id="map-stop-name"></strong></span>
-      <button id="map-stop-clear" type="button" aria-label="Clear stop">✕</button>
-    </div>
-    <button id="radius-btn" type="button" class="map-btn radius-btn active" aria-pressed="true" aria-label="Limit vehicles to 1 km">1 km</button>
     <button id="centre-btn" type="button" class="map-btn" aria-label="Centre on me">◎</button>
-    <div id="map-status" class="map-status">Loading vehicles…</div>
+    <div id="map-status" class="map-status">Tap a stop to see its buses</div>
+
+    <!-- Stop panel: opens over the bottom of the map when a stop is chosen -->
+    <section id="stop-sheet" class="sheet" hidden>
+      <div class="sheet-head">
+        <h2 id="sheet-stop-name"></h2>
+        <button id="sheet-close" type="button" aria-label="Close stop">✕</button>
+      </div>
+      <div id="sheet-lines" class="line-chips"></div>
+      <ul id="sheet-departures" class="sheet-list"></ul>
+    </section>
   </div>
 
   <nav class="tabs">
@@ -58,6 +63,6 @@
   </nav>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script type="module" src="js/app.js?v=7"></script>
+  <script type="module" src="js/app.js?v=8"></script>
 </body>
 </html>
