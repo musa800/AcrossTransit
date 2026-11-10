@@ -342,10 +342,10 @@ export function setPlanTapHandler(cb) {
   onPlanTap = cb;
 }
 
-// While the map is being dragged: update stop dots about 8 times a second,
+// While the map is being dragged: update stop dots about 20 times a second,
 // and load new squares of stops at most every 300 ms. Buses and lines wait
 // until the drag ends (moveend → render).
-const MOVE_DRAW_MS = 120;
+const MOVE_DRAW_MS = 50;
 const MOVE_LOAD_MS = 300;
 let lastMoveDraw = 0;
 let lastMoveLoad = 0;
