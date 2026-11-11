@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=34";
+import { fetchChecked } from "./net.js?v=35";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 

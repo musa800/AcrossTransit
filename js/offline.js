@@ -21,6 +21,11 @@ const STOP_SNAP_M = 60;         // a stop joins the walking network at nodes thi
 const FALLBACK_DETOUR = 1.3;    // outside the walking maps: straight line + 30%
 const TIGHT_S = 120;
 const MAX_RESULTS = 5;
+// Choosing where to get on (and off) the same bus: normally leave as late as
+// possible (and arrive as early as possible), but prefer a stop that saves at
+// least PREFER_WALK_S of walking if it costs at most PREFER_TIME_S.
+const PREFER_WALK_S = 3 * 60;
+const PREFER_TIME_S = 5 * 60;
 const WALK_ONLY_M = 2000;       // also offer walking all the way up to this distance
 const SEARCH_WINDOW_S = 3 * 3600;
 const DAY = 86400;
@@ -149,6 +154,9 @@ async function loadDay(ymd) {
     count: n,
     tlt: d.trips.map((t) => /tallinna linnatransport/i.test(d.agencies[d.routes[t[0]][3]] || "")),
   };
+  // Each trip's connections in stop order (to choose where to get on and off).
+  day.tripConns = d.trips.map((t) => new Int32Array(d.patterns[t[1]].length - 1));
+  for (let c = 0; c < n; c++) day.tripConns[day.trip[c]][day.seq[c]] = c;
   days.set(ymd, day);
   return day;
 }
@@ -556,6 +564,80 @@ async function buildTrip(day, midnight, result, from, to) {
   return trip;
 }
 
+// ---------------------------------------------------------------- where to get on and off
+
+/** Pick an option: best by `score` (higher = better), but prefer much less walking if it costs little. */
+function pickStop(cands, score) {
+  if (!cands.length) return null;
+  let base = cands[0];
+  for (const c of cands) {
+    if (score(c) > score(base) || (score(c) === score(base) && c.walk < base.walk)) base = c;
+  }
+  let alt = null;
+  for (const c of cands) {
+    if (c.walk <= base.walk - PREFER_WALK_S && score(c) >= score(base) - PREFER_TIME_S) {
+      if (!alt || c.walk < alt.walk || (c.walk === alt.walk && score(c) > score(alt))) alt = c;
+    }
+  }
+  return alt || base;
+}
+
+/**
+ * For the trip's first bus, choose the stop to get on; for its last bus (when
+ * you walk straight from it to the destination), the stop to get off.
+ * access / egress: Map stop -> walking seconds. Limits: earliest leave, latest arrival (seconds of day).
+ */
+function chooseStops(day, r, accessS, egressS, minLeave, maxArrive) {
+  const parts = r.parts;
+  const rides = parts.map((p, i) => (p.ride ? i : -1)).filter((i) => i >= 0);
+  if (!rides.length) return r;
+  const out = { ...r, parts: parts.map((p) => ({ ...p })) };
+
+  // Get off: last ride, if nothing but the final walk comes after it.
+  const li = rides[rides.length - 1];
+  if (li === parts.length - 1) {
+    const [b, c] = out.parts[li].ride;
+    const conns = day.tripConns[day.trip[c]];
+    const cands = [];
+    for (let k = day.seq[b]; k < conns.length; k++) {
+      const cc = conns[k];
+      const e = egressS.get(day.to[cc]);
+      if (e === undefined) continue;
+      const arrive = day.arr[cc] + e;
+      if (arrive > maxArrive) continue;
+      cands.push({ conn: cc, walk: e, arrive });
+    }
+    const pick = pickStop(cands, (x) => -x.arrive);
+    if (pick) {
+      out.parts[li].ride = [b, pick.conn];
+      out.lastStop = day.to[pick.conn];
+      out.arrival = pick.arrive;
+    }
+  }
+
+  // Get on: first ride, if you walk to it from the start.
+  const fi = rides[0];
+  if (fi > 0 && out.parts[fi - 1].access !== undefined) {
+    const [b, c] = out.parts[fi].ride;
+    const conns = day.tripConns[day.trip[c]];
+    const cands = [];
+    for (let k = 0; k <= day.seq[c]; k++) {
+      const cc = conns[k];
+      const a = accessS.get(day.from[cc]);
+      if (a === undefined) continue;
+      const leave = day.dep[cc] - a;
+      if (leave < minLeave) continue;
+      cands.push({ conn: cc, walk: a, leave });
+    }
+    const pick = pickStop(cands, (x) => x.leave);
+    if (pick) {
+      out.parts[fi].ride = [pick.conn, c];
+      out.parts[fi - 1] = { access: day.from[pick.conn] };
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- public
 
 /** True if the phone can run the offline planner at all. */
@@ -589,22 +671,29 @@ export async function planOffline(from, to, when, arriveBy, cityOnly, onStatus =
   // Earliest arrival, then again leaving a little later each time, for several options.
   let startS = arriveBy ? nowS - SEARCH_WINDOW_S : nowS;
   const limitS = arriveBy ? nowS : nowS + SEARCH_WINDOW_S;
-  for (let round = 0; round < 12 && results.length < (arriveBy ? 12 : MAX_RESULTS); round++) {
-    const r = scan(day, startS, accessAt(startS), egressS, cityOnly);
-    if (!r) break;
+  const accessS = new Map([...access].map(([s, m]) => [s, m / WALK_SPEED]));
+  const minLeave = arriveBy ? -Infinity : nowS - 60;
+  const maxArrive = arriveBy ? limitS : Infinity;
+  for (let round = 0; round < 16 && results.length < (arriveBy ? 12 : MAX_RESULTS); round++) {
+    const found = scan(day, startS, accessAt(startS), egressS, cityOnly);
+    if (!found) break;
+    const r = chooseStops(day, found, accessS, egressS, minLeave, maxArrive);
     const firstRide = r.parts.find((p) => p.ride);
     if (!firstRide) break; // walking is quicker: no trip needed
     const boardS = day.dep[firstRide.ride[0]];
     if (!arriveBy && boardS > limitS) break;
     if (arriveBy && r.arrival > limitS) break;
-    const key = r.parts.map((p) => (p.ride ? `${day.trip[p.ride[0]]}@${p.ride[0]}` : "")).join("|");
+    // Same bus runs = the same trip, whichever stop you get on at.
+    const key = r.parts.filter((p) => p.ride).map((p) => day.trip[p.ride[0]]).join("|");
     if (!seen.has(key)) {
       seen.add(key);
       results.push(r);
     }
-    // Next search: leave so as to catch a departure after this one's first bus.
-    const firstStop = day.from[firstRide.ride[0]];
-    startS = boardS - (access.get(firstStop) ?? 0) / WALK_SPEED + 60;
+    // Next search: leave so as to catch a departure after this one's first bus
+    // (counted from where the scan boarded it, so the same bus isn't found again).
+    const scanRide = found.parts.find((p) => p.ride);
+    const firstStop = day.from[scanRide.ride[0]];
+    startS = Math.max(startS + 60, day.dep[scanRide.ride[0]] - (access.get(firstStop) ?? 0) / WALK_SPEED + 60);
   }
   let chosen = results;
   if (arriveBy) chosen = results.filter((r) => r.arrival <= limitS).slice(-MAX_RESULTS);
