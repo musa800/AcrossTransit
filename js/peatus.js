@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=31";
+import { fetchChecked } from "./net.js?v=32";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -504,6 +504,36 @@ export async function getRouteDirections(routeId) {
 }
 
 // ---------- Building blocks for the app's own connection check ----------
+
+/**
+ * Departures of specific lines at stops in time windows, in one request.
+ * Asks per line (pattern), so a busy stop can't crowd out the line we want.
+ * requests: [{ stopId, routeId, start (Unix s), range (s) }]
+ * Returns, per request: [{ tripId, routeId, dep (Unix s), serviceDay }], earliest first.
+ */
+export async function getLineDeparturesInWindows(requests) {
+  if (!requests.length) return [];
+  const parts = requests.map(
+    (r, i) => `q${i}: stop(id: ${JSON.stringify(r.stopId)}) {
+      stoptimesForPatterns(startTime: ${Math.floor(r.start)}, timeRange: ${Math.floor(r.range)},
+                           numberOfDepartures: 40, omitNonPickups: true) {
+        pattern { route { gtfsId } }
+        stoptimes { serviceDay scheduledDeparture trip { gtfsId } }
+      }
+    }`
+  );
+  const data = await gql(`{ ${parts.join("\n")} }`);
+  return requests.map((r, i) => {
+    const out = [];
+    for (const group of data[`q${i}`]?.stoptimesForPatterns || []) {
+      if (group.pattern?.route?.gtfsId !== r.routeId) continue;
+      for (const d of group.stoptimes || []) {
+        out.push({ tripId: d.trip?.gtfsId || "", routeId: r.routeId, dep: d.serviceDay + d.scheduledDeparture, serviceDay: d.serviceDay });
+      }
+    }
+    return out.sort((a, b) => a.dep - b.dep);
+  });
+}
 
 /**
  * Departures at several stops in time windows, in one request.

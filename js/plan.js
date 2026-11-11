@@ -1,14 +1,14 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=31";
-import { searchPlaces } from "./geocode.js?v=31";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=32";
+import { searchPlaces } from "./geocode.js?v=32";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=31";
-import { lineKey } from "./vehicles.js?v=31";
-import { findTightConnections } from "./connect.js?v=31";
+} from "./map.js?v=32";
+import { lineKey } from "./vehicles.js?v=32";
+import { findTightConnections } from "./connect.js?v=32";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -486,7 +486,7 @@ async function planCityOnly(when, arriveBy) {
   }
 
   const list = sortTrips([...found.values()], arriveBy);
-  return { trips: list.slice(0, MAX_TRIPS), searchedUntil };
+  return { trips: list.slice(0, MAX_TRIPS), all: list, searchedUntil };
 }
 
 /** Extra tight trips found by the app itself (never fails the plan). */
@@ -531,13 +531,16 @@ async function runPlan() {
   const { when, arriveBy } = planTime();
   try {
     let result;
+    let allTrips = [];
     if (cityOnly()) {
       planMessage("Searching for Tallinn city transport trips…");
       const r = await planCityOnly(when, arriveBy);
       result = r.trips;
+      allTrips = r.all;
       citySearchedUntil = r.searchedUntil;
     } else {
-      result = sortTrips(await searchBoth(when, arriveBy), arriveBy).slice(0, MAX_TRIPS);
+      allTrips = sortTrips(await searchBoth(when, arriveBy), arriveBy);
+      result = allTrips.slice(0, MAX_TRIPS);
     }
     if (run !== planRun) return;
     itineraries = result;
@@ -545,11 +548,12 @@ async function runPlan() {
     // Then the app's own check for tight connections the planner won't offer.
     if (diag) diag.ownRunning = true;
     refreshSearchDetails();
-    const extra = await ownTightCheck(result, when, arriveBy);
+    // It uses every trip found, not just the 8 shown.
+    const extra = await ownTightCheck(allTrips, when, arriveBy);
     if (run !== planRun) return;
     if (diag) diag.ownRunning = false;
     if (extra.length) {
-      itineraries = mergeTrips(result, extra, arriveBy);
+      itineraries = mergeTrips(allTrips, extra, arriveBy);
       // Redraw the list only if it's on screen and gained trips (don't close an open trip).
       if (onListView() && diag.own) showList();
     }

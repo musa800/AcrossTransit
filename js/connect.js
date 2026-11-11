@@ -8,9 +8,9 @@
 //
 // Pure planning logic is in buildTightTrips (no network), so it can be tested.
 
-import { getDeparturesInWindows, getTripsStoptimes } from "./peatus.js?v=31";
+import { getLineDeparturesInWindows, getTripsStoptimes } from "./peatus.js?v=32";
 
-const WINDOW_S = 90 * 60;   // look at trips up to 90 min before the planned ones
+const WINDOW_S = 5 * 3600;  // look at most 5 hours (from the search time up to the planned trips)
 const WALK_SPEED = 5 / 3.6; // m/s
 const DETOUR = 1.3;         // straight line → walking path (corners, crossings)
 
@@ -23,7 +23,7 @@ function distanceM(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 const MAX_SPARE_S = 120;    // only combinations the planner would have called too tight
-const MAX_TRIPS_PER_LINE = 8;
+const MAX_TRIPS_PER_LINE = 40;
 
 /** Index of a trip's first ride, the walking after it, and the second ride. */
 function transferParts(it) {
@@ -96,6 +96,12 @@ export function buildTightTrips(trip, parts, line1, line2, limits, stats = null)
     }
     if (!best) continue;
     if (best.start === r1.start && ride2.start === r2.start) continue; // the planner's own trip
+    if (postHasRide) {
+      // A later ride stays as planned, so ride 2 must still get there in time.
+      const k3 = post.findIndex((l) => l.transit);
+      const walk3 = post.slice(0, k3).reduce((sum, l) => sum + (l.duration || 0), 0);
+      if (ride2.end + walk3 > post[k3].start) continue;
+    }
 
     const legs = [];
     const by1 = best.start - r1.start;
@@ -143,55 +149,64 @@ export async function findTightConnections(trips, limits, stats = {}) {
   stats.walk = null;
   stats.plannerWalk = null;
   stats.closest = null;
-  const jobs = [];
-  const seen = new Set();
+
+  // One job per line pair (line 1 from A to B, line 2 from C to D). The
+  // latest planned trip of that pair is the template: the search covers from
+  // the search time up to it (at most 5 hours).
+  const jobs = new Map();
   for (const trip of trips) {
     const parts = transferParts(trip);
     if (!parts) continue;
     const { r1, r2 } = parts;
-    const key = `${r1.routeId}|${r1.fromStop}|${r1.toStop}|${r2.routeId}|${r2.fromStop}|${r2.toStop}|${r2.start}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    jobs.push({ trip, parts });
+    const key = `${r1.routeId}|${r1.fromStop}|${r1.toStop}|${r2.routeId}|${r2.fromStop}|${r2.toStop}`;
+    const cur = jobs.get(key);
+    if (!cur || r2.start > cur.parts.r2.start) jobs.set(key, { trip, parts });
   }
-  stats.checked = jobs.length;
-  if (!jobs.length) return [];
+  const list = [...jobs.values()];
+  stats.checked = list.length;
+  if (!list.length) return [];
 
-  // 1) Trips of each line at its boarding stop around the planned times (one request).
+  // 1) Departures of each line at its boarding stop in the window (one request).
   const windows = [];
-  for (const { parts } of jobs) {
+  for (const { parts } of list) {
     const { r1, r2 } = parts;
-    windows.push({ stopId: r1.fromStop, start: r1.start - WINDOW_S, range: WINDOW_S + (r2.start - r1.start) + 60 });
-    windows.push({ stopId: r2.fromStop, start: r2.start - WINDOW_S, range: WINDOW_S + 60 });
+    let lo, hi;
+    if (limits.latestEnd != null) {
+      // Arrive by: anything that still arrives in time, up to 5 h before.
+      hi = limits.latestEnd;
+      lo = Math.min(r1.start, hi - WINDOW_S);
+    } else {
+      // Depart at: from the search time up to the planned trip.
+      hi = r2.start;
+      lo = Math.max(limits.earliestStart ?? r1.start - WINDOW_S, hi - WINDOW_S);
+    }
+    windows.push({ stopId: r1.fromStop, routeId: r1.routeId, start: lo, range: Math.max(60, hi - lo + 60) });
+    windows.push({ stopId: r2.fromStop, routeId: r2.routeId, start: lo, range: Math.max(60, hi - lo + 60) });
   }
-  const deps = await getDeparturesInWindows(windows);
+  const deps = await getLineDeparturesInWindows(windows);
 
-  // 2) Stop times of the matching trips (one request).
+  // 2) Stop times of those runs (one request).
   const wanted = [];
   const wantedIndex = new Map();
-  const pick = (list, routeId) => {
+  const pick = (runs) => {
     const ids = [];
-    for (const d of list) {
-      if (d.routeId !== routeId) continue;
-      if (!wantedIndex.has(d.tripId + "|" + d.serviceDay)) {
-        wantedIndex.set(d.tripId + "|" + d.serviceDay, wanted.length);
+    for (const d of runs.slice(0, MAX_TRIPS_PER_LINE)) {
+      const k = d.tripId + "|" + d.serviceDay;
+      if (!wantedIndex.has(k)) {
+        wantedIndex.set(k, wanted.length);
         wanted.push({ tripId: d.tripId, serviceDay: d.serviceDay });
       }
-      ids.push(wantedIndex.get(d.tripId + "|" + d.serviceDay));
-      if (ids.length >= MAX_TRIPS_PER_LINE) break;
+      ids.push(wantedIndex.get(k));
     }
     return ids;
   };
-  const picks = jobs.map(({ parts }, k) => ({
-    line1: pick(deps[2 * k], parts.r1.routeId),
-    line2: pick(deps[2 * k + 1], parts.r2.routeId),
-  }));
+  const picks = list.map((_, k) => ({ line1: pick(deps[2 * k]), line2: pick(deps[2 * k + 1]) }));
   if (!wanted.length) return [];
   const times = await getTripsStoptimes(wanted);
 
   // 3) Combine.
   const extra = [];
-  jobs.forEach(({ trip, parts }, k) => {
+  list.forEach(({ trip, parts }, k) => {
     const line1 = picks[k].line1.map((i) => ({ times: times[i] }));
     const line2 = picks[k].line2.map((i) => ({ times: times[i] }));
     stats.runs1 += line1.length;
