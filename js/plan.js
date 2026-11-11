@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=28";
-import { searchPlaces } from "./geocode.js?v=28";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=29";
+import { searchPlaces } from "./geocode.js?v=29";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=28";
-import { lineKey } from "./vehicles.js?v=28";
+} from "./map.js?v=29";
+import { lineKey } from "./vehicles.js?v=29";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -319,7 +319,7 @@ const isUnknownArg = (err, name) =>
 // What the last plan actually did, shown under the trip list.
 let diag = null;
 function resetDiag() {
-  diag = { normal: 0, tight: 0, added: 0, tightError: "", own: 0, ownError: "" };
+  diag = { normal: 0, tight: 0, added: 0, tightError: "", own: 0, ownError: "", ownStats: null };
 }
 
 /** One search. Settings the server rejects are dropped and the search is retried. */
@@ -493,7 +493,9 @@ async function ownTightCheck(trips, when, arriveBy) {
   const t = Math.floor(when.getTime() / 1000);
   const limits = arriveBy ? { earliestStart: null, latestEnd: t } : { earliestStart: t - 60, latestEnd: null };
   try {
-    let extra = await findTightConnections(trips, limits);
+    const stats = {};
+    if (diag) diag.ownStats = stats;
+    let extra = await findTightConnections(trips, limits, stats);
     if (cityOnly()) extra = extra.filter(tltOnly);
     return extra;
   } catch (err) {
@@ -613,6 +615,13 @@ function searchDetails() {
     `board/alight slack ${ok("boardSlack")}${ok("alightSlack")}`,
   ];
   if (diag) parts.push(`normal ${diag.normal} · tight ${diag.tight} · new ${diag.added} · own check +${diag.own}`);
+  const st = diag?.ownStats;
+  if (st && st.checked != null) {
+    let o = `own check looked at ${st.checked} transfer${st.checked === 1 ? "" : "s"}, ${st.runs1}+${st.runs2} runs`;
+    if (st.walk != null) o += `, walk ${st.walk}s (planner ${st.plannerWalk}s)`;
+    if (st.closest != null) o += `, closest spare ${st.closest}s`;
+    parts.push(o);
+  }
   let text = "Search: " + parts.join(" · ");
   if (diag?.tightError) text += ` · tight search error: ${diag.tightError}`;
   if (diag?.ownError) text += ` · own check error: ${diag.ownError}`;

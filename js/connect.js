@@ -8,9 +8,20 @@
 //
 // Pure planning logic is in buildTightTrips (no network), so it can be tested.
 
-import { getDeparturesInWindows, getTripsStoptimes } from "./peatus.js?v=28";
+import { getDeparturesInWindows, getTripsStoptimes } from "./peatus.js?v=29";
 
 const WINDOW_S = 90 * 60;   // look at trips up to 90 min before the planned ones
+const WALK_SPEED = 5 / 3.6; // m/s
+const DETOUR = 1.3;         // straight line → walking path (corners, crossings)
+
+function distanceM(a, b) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
 const MAX_SPARE_S = 120;    // only combinations the planner would have called too tight
 const MAX_TRIPS_PER_LINE = 8;
 
@@ -23,8 +34,14 @@ function transferParts(it) {
   const r1 = it.legs[i1];
   const r2 = it.legs[i2];
   if (!r1.fromStop || !r1.toStop || !r2.fromStop || !r2.toStop || !r1.routeId || !r2.routeId) return null;
-  const walk = it.legs.slice(i1 + 1, i2).reduce((sum, l) => sum + (l.duration || 0), 0);
-  return { i1, i2, r1, r2, walk };
+  const plannerWalk = it.legs.slice(i1 + 1, i2).reduce((sum, l) => sum + (l.duration || 0), 0);
+  // Our own estimate: straight line between the stops + 30%, at 5 km/h. Use the shorter one.
+  let ownWalk = plannerWalk;
+  if (r1.to?.lat != null && r2.from?.lat != null) {
+    ownWalk = Math.round((distanceM(r1.to, r2.from) * DETOUR) / WALK_SPEED);
+  }
+  const walk = Math.min(plannerWalk, ownWalk);
+  return { i1, i2, r1, r2, walk, plannerWalk };
 }
 
 function shift(leg, by) {
@@ -54,8 +71,9 @@ function rideFrom(orig, times, fromStop, toStop) {
  * line1 / line2: [{ times }] trips of the first and second line (stop times);
  * limits: { earliestStart, latestEnd } (Unix s, either may be null).
  */
-export function buildTightTrips(trip, parts, line1, line2, limits) {
-  const { i1, i2, r1, r2, walk } = parts;
+export function buildTightTrips(trip, parts, line1, line2, limits, stats = null) {
+  const { i1, i2, r1, r2, walk, plannerWalk = walk } = parts;
+  const scale = plannerWalk > 0 ? walk / plannerWalk : 1;
   const out = [];
   const pre = trip.legs.slice(0, i1);
   const post = trip.legs.slice(i2 + 1);
@@ -70,6 +88,9 @@ export function buildTightTrips(trip, parts, line1, line2, limits) {
     let best = null;
     for (const ride1 of firsts) {
       const spare = ride2.start - (ride1.end + walk);
+      // Remember the closest miss/fit, for the Search line.
+      if (stats && spare > -600 && spare < MAX_SPARE_S &&
+          (stats.closest == null || Math.abs(spare) < Math.abs(stats.closest))) stats.closest = spare;
       if (spare < 0 || spare >= MAX_SPARE_S) continue;
       if (!best || ride1.start > best.start) best = ride1;
     }
@@ -82,8 +103,9 @@ export function buildTightTrips(trip, parts, line1, line2, limits) {
     legs.push(best);
     let t = best.end;
     for (const l of trip.legs.slice(i1 + 1, i2)) {
-      legs.push({ ...l, start: t, end: t + (l.duration || 0) });
-      t += l.duration || 0;
+      const d = Math.round((l.duration || 0) * scale);
+      legs.push({ ...l, start: t, end: t + d, duration: d });
+      t += d;
     }
     legs.push(ride2);
     if (postHasRide) {
@@ -114,7 +136,13 @@ export function buildTightTrips(trip, parts, line1, line2, limits) {
  * Find extra tight trips for a list of planned trips.
  * limits: { earliestStart, latestEnd }. Returns the extra trips (may contain duplicates of each other).
  */
-export async function findTightConnections(trips, limits) {
+export async function findTightConnections(trips, limits, stats = {}) {
+  stats.checked = 0;
+  stats.runs1 = 0;
+  stats.runs2 = 0;
+  stats.walk = null;
+  stats.plannerWalk = null;
+  stats.closest = null;
   const jobs = [];
   const seen = new Set();
   for (const trip of trips) {
@@ -126,6 +154,7 @@ export async function findTightConnections(trips, limits) {
     seen.add(key);
     jobs.push({ trip, parts });
   }
+  stats.checked = jobs.length;
   if (!jobs.length) return [];
 
   // 1) Trips of each line at its boarding stop around the planned times (one request).
@@ -165,7 +194,13 @@ export async function findTightConnections(trips, limits) {
   jobs.forEach(({ trip, parts }, k) => {
     const line1 = picks[k].line1.map((i) => ({ times: times[i] }));
     const line2 = picks[k].line2.map((i) => ({ times: times[i] }));
-    extra.push(...buildTightTrips(trip, parts, line1, line2, limits));
+    stats.runs1 += line1.length;
+    stats.runs2 += line2.length;
+    if (stats.walk == null || parts.walk < stats.walk) {
+      stats.walk = parts.walk;
+      stats.plannerWalk = parts.plannerWalk;
+    }
+    extra.push(...buildTightTrips(trip, parts, line1, line2, limits, stats));
   });
   return extra;
 }
