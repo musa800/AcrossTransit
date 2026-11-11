@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=25";
-import { searchPlaces } from "./geocode.js?v=25";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=26";
+import { searchPlaces } from "./geocode.js?v=26";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=25";
-import { lineKey } from "./vehicles.js?v=25";
+} from "./map.js?v=26";
+import { lineKey } from "./vehicles.js?v=26";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -310,23 +310,40 @@ const WALK_SPEED = 5 / 3.6;  // 5 km/h in m/s
 const MAX_TRIPS = 8;         // cap on the merged list
 const NORMAL_MARGIN_S = 120; // the planner's usual transfer margin (for labelling)
 
-let walkSpeedSupported = true;
-let tightSupported = true;
+// Settings the server turned out not to know (found out on first use, then left out).
+const unsupported = new Set();
 
 const isUnknownArg = (err, name) =>
   /UnknownArgument|FieldUndefined|WrongType|Validation/i.test(err.message) && err.message.includes(name);
 
-/** One search, at 5 km/h if the server accepts it. */
+// What the last plan actually did, shown under the trip list.
+let diag = null;
+function resetDiag() {
+  diag = { normal: 0, tight: 0, added: 0, tightError: "" };
+}
+
+/** One search. Settings the server rejects are dropped and the search is retried. */
 async function searchOnce(when, arriveBy, opts) {
-  if (walkSpeedSupported) {
+  const wanted = { ...opts, walkSpeed: WALK_SPEED };
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const use = Object.fromEntries(Object.entries(wanted).filter(([k]) => !unsupported.has(k)));
     try {
-      return await planTrip(ends.from, ends.to, when, arriveBy, { ...opts, walkSpeed: WALK_SPEED });
+      return await planTrip(ends.from, ends.to, when, arriveBy, use);
     } catch (err) {
-      if (!isUnknownArg(err, "walkSpeed")) throw err;
-      walkSpeedSupported = false;
+      const bad = ["walkSpeed", "minTransferTime", "boardSlack", "alightSlack"].find(
+        (k) => k in use && isUnknownArg(err, k)
+      );
+      if (!bad) throw err;
+      unsupported.add(bad);
     }
   }
   return planTrip(ends.from, ends.to, when, arriveBy, opts);
+}
+
+const TIGHT_OPTS = { minTransferTime: 0, boardSlack: 0, alightSlack: 0 };
+
+function tightPossible() {
+  return Object.keys(TIGHT_OPTS).some((k) => !unsupported.has(k));
 }
 
 /** Same lines, boarding at the same stops, at the same times = the same trip. */
@@ -338,18 +355,27 @@ function tripKey(it) {
 /** Normal and no-margin searches together; returns the merged trips (tight ones marked). */
 async function searchBoth(when, arriveBy, opts = {}) {
   const normal = searchOnce(when, arriveBy, opts);
-  const tight = tightSupported
-    ? searchOnce(when, arriveBy, { ...opts, minTransferTime: 0 }).catch((err) => {
-        if (isUnknownArg(err, "minTransferTime")) tightSupported = false;
+  const tight = tightPossible()
+    ? searchOnce(when, arriveBy, { ...opts, ...TIGHT_OPTS }).catch((err) => {
+        if (diag) diag.tightError = err.message.slice(0, 160);
         return []; // the normal search still counts
       })
     : Promise.resolve([]);
   const [a, b] = await Promise.all([normal, tight]);
   const merged = new Map();
   for (const it of a) merged.set(tripKey(it), { ...it, tight: false });
+  let added = 0;
   for (const it of b) {
     const k = tripKey(it);
-    if (!merged.has(k)) merged.set(k, { ...it, tight: true });
+    if (!merged.has(k)) {
+      merged.set(k, { ...it, tight: true });
+      added++;
+    }
+  }
+  if (diag) {
+    diag.normal += a.length;
+    diag.tight += b.length;
+    diag.added += added;
   }
   return [...merged.values()];
 }
@@ -465,6 +491,7 @@ async function runPlan() {
     return;
   }
   const run = ++planRun;
+  resetDiag();
   planMessage("Searching for trips…");
   const { when, arriveBy } = planTime();
   try {
@@ -537,6 +564,21 @@ function showList() {
   if (cityOnly() && !leavesTallinn()) {
     box.appendChild(cityOnlyHint("Only Tallinn city transport is shown. Other operators may have faster or more frequent trips."));
   }
+  box.appendChild(searchDetails());
+}
+
+/** A small line describing what the planner accepted and found (for checking the tight search). */
+function searchDetails() {
+  const ok = (k) => (unsupported.has(k) ? "✗" : "✓");
+  const parts = [
+    `5 km/h ${ok("walkSpeed")}`,
+    `no margin ${ok("minTransferTime")}`,
+    `board/alight slack ${ok("boardSlack")}${ok("alightSlack")}`,
+  ];
+  if (diag) parts.push(`normal ${diag.normal} · tight ${diag.tight} · new ${diag.added}`);
+  let text = "Search: " + parts.join(" · ");
+  if (diag?.tightError) text += ` · tight search error: ${diag.tightError}`;
+  return el("li", "muted small search-details", text);
 }
 
 function showDetails(i) {

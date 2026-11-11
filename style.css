@@ -601,3 +601,5 @@ p { margin: 4px 0; }
 @media (prefers-color-scheme: dark) {
   .tight-badge, .step.tight-step { background: #3a3215; border-color: #6b5a1d; color: #f1dc9a; }
 }
+
+.search-details { background: transparent; border-style: dashed; font-size: 0.75rem; overflow-wrap: anywhere; }

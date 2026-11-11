@@ -2,8 +2,8 @@
 // Free to use, with a limit of about one request per second; this module
 // waits between requests so the app stays within it.
 
-import { fetchChecked } from "./net.js?v=25";
-import { distanceM } from "./peatus.js?v=25";
+import { fetchChecked } from "./net.js?v=26";
+import { distanceM } from "./peatus.js?v=26";
 
 const URL_BASE = "https://nominatim.openstreetmap.org/search";
 const MIN_GAP_MS = 1100;

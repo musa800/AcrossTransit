@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=25";
+import { fetchChecked } from "./net.js?v=26";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -254,7 +254,7 @@ export function decodePolyline(str) {
  *     from: {name, lat, lon}, to: {name, lat, lon}, stops, points }
  */
 export async function planTrip(from, to, when, arriveBy = false, options = {}) {
-  const { bannedAgencies = null, count = 5, walkSpeed = null, minTransferTime = null } = options;
+  const { bannedAgencies = null, count = 5 } = options;
   // Optional settings are only added to the query when used, so a server
   // that doesn't know one of them only fails the search that asked for it.
   const extraVars = [];
@@ -265,15 +265,13 @@ export async function planTrip(from, to, when, arriveBy = false, options = {}) {
     extraArgs.push("banned: { agencies: $banned }");
     extraValues.banned = bannedAgencies;
   }
-  if (walkSpeed != null) {
-    extraVars.push("$walkSpeed: Float!");
-    extraArgs.push("walkSpeed: $walkSpeed");
-    extraValues.walkSpeed = walkSpeed;
-  }
-  if (minTransferTime != null) {
-    extraVars.push("$minTransferTime: Int!");
-    extraArgs.push("minTransferTime: $minTransferTime");
-    extraValues.minTransferTime = minTransferTime;
+  // Optional numeric settings, each added only when given.
+  const OPTIONAL = { walkSpeed: "Float", minTransferTime: "Int", boardSlack: "Int", alightSlack: "Int" };
+  for (const [name, type] of Object.entries(OPTIONAL)) {
+    if (options[name] == null) continue;
+    extraVars.push(`$${name}: ${type}!`);
+    extraArgs.push(`${name}: $${name}`);
+    extraValues[name] = options[name];
   }
   const varsDecl = extraVars.length ? ", " + extraVars.join(", ") : "";
   const argsUse = extraArgs.length ? ", " + extraArgs.join(", ") : "";
