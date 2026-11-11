@@ -15,6 +15,15 @@ A personal transit app for Tallinn, built step by step.
 4. ✅ Line schedule at a stop (whole day)
 5. ✅ Route planner with transfers (Plan tab)
 
+## Data for the app's own planner
+Built every night by `.github/workflows/site.yml` (runs `tools/build_data.py` on GitHub's machine)
+and published with the site under `data/` — not stored in the repository:
+- `day-YYYYMMDD.json.gz` timetables (Tallinn city, Harju county, Elron) for today + 7 days
+- `stops.json.gz`, `walk.json.gz` (walking network from OpenStreetMap), `transfers.json.gz` (stop-to-stop walks)
+- `report.json` (what was built, any problems)
+
+Pushes to main only publish code and keep the current data. Settings → Pages → Source must be "GitHub Actions".
+
 ## Live site
 https://musa800.github.io/AcrossTransit/
 

@@ -1,0 +1,86 @@
+# Builds and publishes the website (app + timetable/walking data) to GitHub Pages.
+#
+# - Every night: rebuilds the data from the official timetables and OpenStreetMap.
+# - On every push to main: publishes the new app code and keeps the current data
+#   (fast; the data is only rebuilt if the site has none yet).
+# - Can also be started by hand (Actions tab → "Build and publish site" → Run workflow).
+#
+# Needs Settings → Pages → Source: "GitHub Actions".
+
+name: Build and publish site
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 0 * * *" # 02:17 / 03:17 in Tallinn
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Code-only change: keep the data that's already on the site.
+      - name: Keep current data
+        id: reuse
+        if: github.event_name == 'push'
+        continue-on-error: true
+        run: python3 tools/reuse_data.py _site/data
+
+      - name: Install OpenStreetMap reader
+        if: github.event_name != 'push' || steps.reuse.outcome == 'failure'
+        run: pip install "osmium>=3.7,<5"
+
+      - name: Build data
+        id: data
+        if: github.event_name != 'push' || steps.reuse.outcome == 'failure'
+        continue-on-error: true
+        timeout-minutes: 30
+        run: python3 tools/build_data.py --out _site/data
+
+      # If the nightly build failed, publish yesterday's data rather than none.
+      - name: Fall back to current data
+        if: steps.data.outcome == 'failure'
+        continue-on-error: true
+        run: python3 tools/reuse_data.py _site/data
+
+      - name: Add the app
+        run: |
+          rsync -a ./ _site/ \
+            --exclude '.git' --exclude '.github' --exclude '_site' \
+            --exclude 'tools' --exclude 'relay' --exclude 'README.md' \
+            --exclude 'wrangler.jsonc' --exclude '.assetsignore'
+          ls -la _site _site/data || true
+          cat _site/data/report.json 2>/dev/null | head -60 || true
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
