@@ -85,10 +85,10 @@ li {
 #stops li { cursor: pointer; }
 #stops li:hover { border-color: var(--accent); }
 
-/* Offline banner, above every tab */
+/* Offline note: small pill just above the tab bar, fades after a few seconds */
 .offline-banner {
   position: fixed;
-  top: calc(8px + env(safe-area-inset-top));
+  bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom) + 10px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 3000;
