@@ -2,8 +2,8 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=43";
-import { lineColor as colorOf, legColor } from "./colors.js?v=43";
+import { getVehicles, lineKey } from "./vehicles.js?v=44";
+import { lineColor as colorOf, legColor } from "./colors.js?v=44";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -239,6 +239,15 @@ export function initMap(el, statusCallback) {
 
   map.on("moveend", render);
   map.on("move", onMoving);
+  map.on("movestart", () => {
+    moveStartAt = performance.now();
+    lastMoveAt = Date.now();
+    $map("map-view")?.classList.add("moving");
+  });
+  map.on("moveend", () => {
+    lastMoveAt = Date.now();
+    $map("map-view")?.classList.remove("moving");
+  });
   map.on("click", onMapTap);
   // Leaflet closes an open popup just before the tap reaches onMapTap;
   // remember when, so that tap only closes the popup.
@@ -529,12 +538,22 @@ let framePending = false;
 
 let lastDrawCenter = null;
 const MOVE_MIN_M = 20; // don't update the dots for smaller moves than this
+const FIRST_FRAMES_MS = 120; // let the map start moving before redrawing dots
+let moveStartAt = 0;
+let lastMoveAt = 0;
+const $map = (id) => document.getElementById(id);
+
+/** Milliseconds since the map last moved (for background work to wait for a quiet moment). */
+export function mapIdleMs() {
+  return map && map._animatingZoom ? 0 : Date.now() - lastMoveAt;
+}
 
 function onMoving() {
   if (framePending) return;
   framePending = true;
   requestAnimationFrame(() => {
     framePending = false;
+    if (performance.now() - moveStartAt < FIRST_FRAMES_MS) return; // next move event redraws
     const c = map.getCenter();
     if (lastDrawCenter) {
       const kx = 111320 * Math.cos((c.lat * Math.PI) / 180);

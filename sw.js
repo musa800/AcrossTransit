@@ -10,7 +10,7 @@
 //
 // Keep VERSION equal to the ?v= number used in index.html and js/.
 
-const VERSION = "43";
+const VERSION = "44";
 const CACHE = `acrosstransit-v${VERSION}`;
 const LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/";
 const TILES = "acrosstransit-tiles-v1";
@@ -55,32 +55,50 @@ function isAppFile(url) {
 }
 
 let tilePuts = 0;
+const keptTiles = new Set(); // squares known to be kept (since the worker started)
+
 async function trimTiles(cache) {
   const keys = await cache.keys();
   for (let i = 0; i < keys.length - MAX_TILES; i++) await cache.delete(keys[i]); // oldest first
 }
 
-/** Map squares: from the internet when possible (and kept), else the kept copy. */
-async function tile(req) {
+/** Keep a map square, in the background (skipped if it's already kept). */
+async function keepTile(req, res) {
+  if (keptTiles.has(req.url)) return;
   const cache = await caches.open(TILES);
+  if (!(await cache.match(req))) {
+    await cache.put(req, res);
+    if (++tilePuts % 400 === 0) await trimTiles(cache);
+  }
+  keptTiles.add(req.url);
+}
+
+/**
+ * Map squares: straight from the internet when possible (handed to the map
+ * at once, kept afterwards), else the kept copy.
+ */
+async function tile(event) {
+  const req = event.request;
   try {
     const res = await fetch(req);
-    if (res.ok && res.type !== "opaque") {
-      await cache.put(req, res.clone());
-      if (++tilePuts % 100 === 0) trimTiles(cache);
-    }
+    if (res.ok && res.type !== "opaque") event.waitUntil(keepTile(req, res.clone()).catch(() => {}));
     return res;
   } catch {
+    const cache = await caches.open(TILES);
     return (await cache.match(req)) || Response.error();
   }
 }
+
+// The app pings while it's open, so the phone doesn't put this worker to
+// sleep (waking it up delayed the first map squares of a drag).
+self.addEventListener("message", () => {});
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (url.hostname.endsWith("tile.openstreetmap.org")) {
-    event.respondWith(tile(req));
+    event.respondWith(tile(event));
     return;
   }
   if (!isAppFile(url)) return; // live data: browser handles it normally

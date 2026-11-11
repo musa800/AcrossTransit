@@ -11,7 +11,7 @@
 // OpenStreetMap at 5 km/h, with no transfer margin; transfers with less than
 // two minutes to spare are labelled tight.
 
-import { decodePolyline } from "./peatus.js?v=43";
+import { decodePolyline } from "./peatus.js?v=44";
 
 const BASE = "data/";
 const CACHE = "acrosstransit-data-v1";
@@ -1093,12 +1093,13 @@ let prefetching = null;
  * onStart() is called if a download actually begins; onProgress(fraction 0–1)
  * as files arrive. Resolves when done (or right away if not needed today).
  */
-export function prefetchOffline(pos, onStart = () => {}, onProgress = () => {}) {
-  if (!prefetching) prefetching = runPrefetch(pos, onStart, onProgress).finally(() => (prefetching = null));
+export function prefetchOffline(pos, onStart = () => {}, onProgress = () => {}, pause = async () => {}) {
+  if (!prefetching) prefetching = runPrefetch(pos, onStart, onProgress, pause).finally(() => (prefetching = null));
   return prefetching;
 }
 
-async function runPrefetch(pos, onStart, onProgress) {
+/** pause(): resolves when it's a good moment to continue (e.g. the map isn't moving). */
+async function runPrefetch(pos, onStart, onProgress, pause) {
   if (!offlineSupported() || !navigator.onLine) return;
   const today = ymdOf(new Date());
   try {
@@ -1106,6 +1107,7 @@ async function runPrefetch(pos, onStart, onProgress) {
   } catch {
     /* fine: just fetch */
   }
+  await pause();
   onStart();
   onProgress(0.02);
   await loadBasics();
@@ -1118,6 +1120,7 @@ async function runPrefetch(pos, onStart, onProgress) {
   const total = steps.reduce((s, x) => s + x.w, 0);
   let done = 0;
   for (const st of steps) {
+    await pause();
     await Promise.resolve(st.run()).catch(() => {});
     done += st.w;
     onProgress(0.1 + 0.9 * (done / total));

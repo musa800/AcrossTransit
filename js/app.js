@@ -4,20 +4,20 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule, getNearbyDepartures, getStopsPatterns,
-} from "./peatus.js?v=43";
+} from "./peatus.js?v=44";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
-  setStopSource, getCenter, showStopRoutes, setLineFilter, setMode, forgetOfflineStops,
+  setStopSource, getCenter, showStopRoutes, setLineFilter, setMode, forgetOfflineStops, mapIdleMs,
   initLocation, getMyPosition, getLocationError, showRoute, clearRoute,
   showNearRoutes, setNearFilter, clearNearRoutes, setNearStops,
-} from "./map.js?v=43";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=43";
-import { initRoutes, enterRoutes } from "./routes.js?v=43";
-import { lineColor } from "./colors.js?v=43";
+} from "./map.js?v=44";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=44";
+import { initRoutes, enterRoutes } from "./routes.js?v=44";
+import { lineColor } from "./colors.js?v=44";
 import {
   offlineSupported, isOfflineStop, offlineStopDepartures, offlinePatterns, offlineNearby,
   offlineSchedule, offlineDays, offlineStopsInBox, prefetchOffline,
-} from "./offline.js?v=43";
+} from "./offline.js?v=44";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -880,10 +880,16 @@ switchTab("map");
 function prefetchWithBar() {
   const bar = $("prep-bar");
   let showTimer = null;
+  // Each file waits for a quiet moment: not while you're dragging the map.
+  const pause = () => new Promise((resolve) => {
+    const check = () => (mapIdleMs() > 2000 && !document.hidden ? resolve() : setTimeout(check, 500));
+    check();
+  });
   prefetchOffline(
     getMyPosition(),
     () => (showTimer = setTimeout(() => (bar.hidden = false), 300)), // no flash if it's quick
-    (f) => ($("prep-fill").style.width = `${Math.round(f * 100)}%`)
+    (f) => ($("prep-fill").style.width = `${Math.round(f * 100)}%`),
+    pause
   )
     .catch(() => {})
     .finally(() => {
@@ -895,6 +901,14 @@ function prefetchWithBar() {
 setTimeout(prefetchWithBar, 3000);
 
 // Installable app + opening without internet (see sw.js).
+// Keep the background worker awake while the app is on screen, so map squares
+// don't wait for it to wake up at the start of a drag.
+if ("serviceWorker" in navigator) {
+  setInterval(() => {
+    if (!document.hidden) navigator.serviceWorker.controller?.postMessage("ping");
+  }, 20000);
+}
+
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => {
     /* not critical: the app works without it, just not offline */

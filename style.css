@@ -676,3 +676,4 @@ p { margin: 4px 0; }
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
   letter-spacing: 0.02em;
 }
+#map-view.moving .prep-fill { animation-play-state: paused; } /* no stripe animation while dragging */
