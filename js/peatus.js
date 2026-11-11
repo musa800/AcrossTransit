@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=27";
+import { fetchChecked } from "./net.js?v=28";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -287,10 +287,10 @@ export async function planTrip(from, to, when, arriveBy = false, options = {}) {
            startTime endTime duration walkDistance
            legs {
              mode startTime endTime distance duration
-             route { shortName mode agency { name } }
+             route { gtfsId shortName mode agency { name } }
              trip { tripHeadsign }
-             from { name lat lon }
-             to { name lat lon }
+             from { name lat lon stop { gtfsId } }
+             to { name lat lon stop { gtfsId } }
              intermediateStops { gtfsId name lat lon }
              legGeometry { points }
            }
@@ -318,6 +318,9 @@ export async function planTrip(from, to, when, arriveBy = false, options = {}) {
       line: l.route?.shortName || "",
       headsign: l.trip?.tripHeadsign || "",
       operator: l.route?.agency?.name || "",
+      routeId: l.route?.gtfsId || "",
+      fromStop: l.from?.stop?.gtfsId || "",
+      toStop: l.to?.stop?.gtfsId || "",
       start: Math.round(l.startTime / 1000),
       end: Math.round(l.endTime / 1000),
       distance: l.distance || 0,
@@ -498,4 +501,65 @@ export async function getRouteDirections(routeId) {
     }
   }
   return [...best.values()].sort((a, b) => a.directionId - b.directionId);
+}
+
+// ---------- Building blocks for the app's own connection check ----------
+
+/**
+ * Departures at several stops in time windows, in one request.
+ * requests: [{ stopId, start (Unix s), range (s) }]
+ * Returns, per request: [{ tripId, routeId, dep (Unix s), serviceDay }].
+ */
+export async function getDeparturesInWindows(requests) {
+  if (!requests.length) return [];
+  const parts = requests.map(
+    (r, i) => `q${i}: stop(id: ${JSON.stringify(r.stopId)}) {
+      stoptimesWithoutPatterns(startTime: ${Math.floor(r.start)}, timeRange: ${Math.floor(r.range)},
+                               numberOfDepartures: 60, omitNonPickups: true) {
+        serviceDay scheduledDeparture
+        trip { gtfsId route { gtfsId } }
+      }
+    }`
+  );
+  const data = await gql(`{ ${parts.join("\n")} }`);
+  return requests.map((r, i) =>
+    (data[`q${i}`]?.stoptimesWithoutPatterns || []).map((d) => ({
+      tripId: d.trip?.gtfsId || "",
+      routeId: d.trip?.route?.gtfsId || "",
+      dep: d.serviceDay + d.scheduledDeparture,
+      serviceDay: d.serviceDay,
+    }))
+  );
+}
+
+/**
+ * The stop times of several trips on their service day, in one request.
+ * trips: [{ tripId, serviceDay }]
+ * Returns, per trip: [{ stopId, name, lat, lon, arr, dep }] (Unix s), in order.
+ */
+export async function getTripsStoptimes(trips) {
+  if (!trips.length) return [];
+  const ymd = (serviceDay) => {
+    const d = new Date((serviceDay + 12 * 3600) * 1000); // midday of the service day
+    return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const parts = trips.map(
+    (t, i) => `t${i}: trip(id: ${JSON.stringify(t.tripId)}) {
+      stoptimesForDate(serviceDate: ${JSON.stringify(ymd(t.serviceDay))}) {
+        serviceDay scheduledArrival scheduledDeparture
+        stop { gtfsId name lat lon }
+      }
+    }`
+  );
+  const data = await gql(`{ ${parts.join("\n")} }`);
+  return trips.map((t, i) =>
+    (data[`t${i}`]?.stoptimesForDate || []).map((s) => ({
+      stopId: s.stop?.gtfsId || "",
+      name: s.stop?.name || "",
+      lat: s.stop?.lat,
+      lon: s.stop?.lon,
+      arr: s.serviceDay + s.scheduledArrival,
+      dep: s.serviceDay + s.scheduledDeparture,
+    }))
+  );
 }

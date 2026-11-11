@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=27";
-import { searchPlaces } from "./geocode.js?v=27";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=28";
+import { searchPlaces } from "./geocode.js?v=28";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=27";
-import { lineKey } from "./vehicles.js?v=27";
+} from "./map.js?v=28";
+import { lineKey } from "./vehicles.js?v=28";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -306,8 +306,7 @@ function leavesTallinn() {
 // one with the planner's normal transfer margin, one with no margin. Trips
 // only the second one finds have a tight transfer and are labelled so.
 
-const WALK_SPEED = 5 / 3.6;        // 5 km/h in m/s: normal searches
-const TIGHT_WALK_SPEED = 6 / 3.6;  // 6 km/h: the no-margin search assumes a brisk walk
+const WALK_SPEED = 5 / 3.6;  // 5 km/h in m/s, for every search
 const MAX_TRIPS = 8;         // cap on the merged list
 const NORMAL_MARGIN_S = 120; // the planner's usual transfer margin (for labelling)
 
@@ -320,7 +319,7 @@ const isUnknownArg = (err, name) =>
 // What the last plan actually did, shown under the trip list.
 let diag = null;
 function resetDiag() {
-  diag = { normal: 0, tight: 0, added: 0, tightError: "" };
+  diag = { normal: 0, tight: 0, added: 0, tightError: "", own: 0, ownError: "" };
 }
 
 /** One search. Settings the server rejects are dropped and the search is retried. */
@@ -341,16 +340,19 @@ async function searchOnce(when, arriveBy, opts) {
   return planTrip(ends.from, ends.to, when, arriveBy, opts);
 }
 
-const TIGHT_OPTS = { minTransferTime: 0, boardSlack: 0, alightSlack: 0, walkSpeed: TIGHT_WALK_SPEED };
+const TIGHT_OPTS = { minTransferTime: 0, boardSlack: 0, alightSlack: 0 };
 
 function tightPossible() {
-  return Object.keys(TIGHT_OPTS).some((k) => k !== "walkSpeed" && !unsupported.has(k));
+  return Object.keys(TIGHT_OPTS).some((k) => !unsupported.has(k));
 }
 
-/** Same lines, boarding at the same stops, at the same times = the same trip. */
+/**
+ * Same rides (line, boarding stop, departure time) = the same trip, even if
+ * the walking parts were timed differently.
+ */
 function tripKey(it) {
   const rides = it.legs.filter((l) => l.transit).map((l) => `${l.mode}:${l.line}@${l.from.name}@${l.start}`);
-  return `${it.start}|${it.end}|${rides.join(",")}`;
+  return rides.length ? rides.join(",") : "walk only";
 }
 
 /** Normal and no-margin searches together; returns the merged trips (tight ones marked). */
@@ -486,6 +488,35 @@ async function planCityOnly(when, arriveBy) {
   return { trips: list.slice(0, MAX_TRIPS), searchedUntil };
 }
 
+/** Extra tight trips found by the app itself (never fails the plan). */
+async function ownTightCheck(trips, when, arriveBy) {
+  const t = Math.floor(when.getTime() / 1000);
+  const limits = arriveBy ? { earliestStart: null, latestEnd: t } : { earliestStart: t - 60, latestEnd: null };
+  try {
+    let extra = await findTightConnections(trips, limits);
+    if (cityOnly()) extra = extra.filter(tltOnly);
+    return extra;
+  } catch (err) {
+    if (diag) diag.ownError = err.message.slice(0, 160);
+    return [];
+  }
+}
+
+/** Add extra trips to a list: no duplicates, sorted, capped. */
+function mergeTrips(list, extra, arriveBy) {
+  const byKey = new Map(list.map((it) => [tripKey(it), it]));
+  let added = 0;
+  for (const it of extra) {
+    const k = tripKey(it);
+    if (!byKey.has(k)) {
+      byKey.set(k, it);
+      added++;
+    }
+  }
+  if (diag) diag.own = added;
+  return sortTrips([...byKey.values()], arriveBy).slice(0, MAX_TRIPS);
+}
+
 async function runPlan() {
   if (!ends.from || !ends.to) {
     hideSheet();
@@ -507,6 +538,11 @@ async function runPlan() {
     }
     if (run !== planRun) return;
     itineraries = result;
+    showList();
+    // Then the app's own check for tight connections the planner won't offer.
+    const extra = await ownTightCheck(result, when, arriveBy);
+    if (run !== planRun || !extra.length) return;
+    itineraries = mergeTrips(result, extra, arriveBy);
     showList();
   } catch (err) {
     if (run !== planRun) return;
@@ -573,12 +609,13 @@ function searchDetails() {
   const ok = (k) => (unsupported.has(k) ? "✗" : "✓");
   const parts = [
     `5 km/h ${ok("walkSpeed")}`,
-    `tight: 6 km/h, no margin ${ok("minTransferTime")}`,
+    `no margin ${ok("minTransferTime")}`,
     `board/alight slack ${ok("boardSlack")}${ok("alightSlack")}`,
   ];
-  if (diag) parts.push(`normal ${diag.normal} · tight ${diag.tight} · new ${diag.added}`);
+  if (diag) parts.push(`normal ${diag.normal} · tight ${diag.tight} · new ${diag.added} · own check +${diag.own}`);
   let text = "Search: " + parts.join(" · ");
   if (diag?.tightError) text += ` · tight search error: ${diag.tightError}`;
+  if (diag?.ownError) text += ` · own check error: ${diag.ownError}`;
   return el("li", "muted small search-details", text);
 }
 

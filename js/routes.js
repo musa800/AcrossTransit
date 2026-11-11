@@ -2,7 +2,7 @@
 // first and open, others load when expanded), search, and a route's details
 // (directions and stops) with "Show on map".
 
-import { getAgencies, getAgencyRoutes, searchRoutes, getRouteDirections, isTlt } from "./peatus.js?v=27";
+import { getAgencies, getAgencyRoutes, searchRoutes, getRouteDirections, isTlt } from "./peatus.js?v=28";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const TYPE_ORDER = ["TRAM", "TROLLEYBUS", "BUS", "RAIL", "FERRY"];

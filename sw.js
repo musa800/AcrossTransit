@@ -8,7 +8,7 @@
 //
 // Keep VERSION equal to the ?v= number used in index.html and js/.
 
-const VERSION = "27";
+const VERSION = "28";
 const CACHE = `acrosstransit-v${VERSION}`;
 const LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/";
 
@@ -16,7 +16,7 @@ const APP_FILES = [
   "./",
   "index.html",
   `style.css?v=${VERSION}`,
-  ...["app", "map", "plan", "routes", "peatus", "vehicles", "geocode", "net"].map((f) => `js/${f}.js?v=${VERSION}`),
+  ...["app", "map", "plan", "routes", "connect", "peatus", "vehicles", "geocode", "net"].map((f) => `js/${f}.js?v=${VERSION}`),
   "manifest.webmanifest",
   "icons/icon-192.png",
   "icons/icon-512.png",
