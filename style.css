@@ -603,3 +603,20 @@ p { margin: 4px 0; }
 }
 
 .search-details { background: transparent; border-style: dashed; font-size: 0.75rem; overflow-wrap: anywhere; }
+
+/* Planner choice and source labels */
+.plan-source-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 0.9rem; }
+.plan-source-row select {
+  flex: 1; min-width: 0; padding: 6px 8px; font-size: 0.9rem;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text);
+}
+.source-tag {
+  justify-self: start;
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.source-tag.offline { border-color: var(--accent); color: var(--accent-text); }

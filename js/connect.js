@@ -10,7 +10,7 @@
 //
 // Network calls come in through ctx, so joinTrip/transferSpare can be tested alone.
 
-import { getTripsStoptimes } from "./peatus.js?v=33";
+import { getTripsStoptimes } from "./peatus.js?v=34";
 
 const MAX_TRIPS = 3;        // check the first ride of this many trips
 const MAX_STOPS = 8;        // at most this many stops per ride

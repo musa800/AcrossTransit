@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-title" content="AcrossTransit">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="style.css?v=33">
+  <link rel="stylesheet" href="style.css?v=34">
 </head>
 <body>
   <div id="offline-banner" class="offline-banner" hidden>You're offline. Departures, buses and the map need a connection.</div>
@@ -136,6 +136,14 @@
         <input id="plan-city-only" type="checkbox">
         <span>Tallinn city transport only</span>
       </label>
+      <label class="plan-source-row">
+        <span>Planner</span>
+        <select id="plan-source" aria-label="Planner">
+          <option value="both">Compare both</option>
+          <option value="online">Peatus.ee (online)</option>
+          <option value="offline">Own planner (offline)</option>
+        </select>
+      </label>
       <ul id="plan-suggest" class="suggest" hidden></ul>
     </div>
 
@@ -175,6 +183,6 @@
   </nav>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script type="module" src="js/app.js?v=33"></script>
+  <script type="module" src="js/app.js?v=34"></script>
 </body>
 </html>

@@ -1,14 +1,15 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, planMany, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=33";
-import { searchPlaces } from "./geocode.js?v=33";
+import { searchStops, planTrip, planMany, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=34";
+import { searchPlaces } from "./geocode.js?v=34";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=33";
-import { lineKey } from "./vehicles.js?v=33";
-import { findBetterTransfers } from "./connect.js?v=33";
+} from "./map.js?v=34";
+import { lineKey } from "./vehicles.js?v=34";
+import { findBetterTransfers } from "./connect.js?v=34";
+import { planOffline, offlineSupported } from "./offline.js?v=34";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -274,6 +275,37 @@ function saveCityOnly(on) {
   } catch {
     /* storage unavailable: the choice just isn't remembered */
   }
+}
+
+// Which planner to use: "both" (compare), "online" (Peatus.ee), "offline" (the app's own).
+const SOURCE_KEY = "acrosstransit.plannerSource";
+
+function plannerSource() {
+  const v = $("plan-source").value;
+  if (v !== "online" && !offlineSupported()) return "online";
+  return v;
+}
+
+function loadSource() {
+  try {
+    return localStorage.getItem(SOURCE_KEY) || "both";
+  } catch {
+    return "both";
+  }
+}
+
+function saveSource(v) {
+  try {
+    localStorage.setItem(SOURCE_KEY, v);
+  } catch {
+    /* not remembered */
+  }
+}
+
+/** Online and offline trips in one list, sorted; each marked with where it came from. */
+function combineSources(online, offline, arriveBy) {
+  const list = [...online.map((t) => ({ ...t, source: t.source || "online" })), ...offline];
+  return sortTrips(list, arriveBy).slice(0, MAX_TRIPS + (offline.length ? 5 : 0));
 }
 
 function cityOnly() {
@@ -554,11 +586,49 @@ async function runPlan() {
   resetDiag();
   planMessage("Searching for trips…");
   const { when, arriveBy } = planTime();
+  const source = plannerSource();
+  let onlineTrips = [];
+  let offlineTrips = [];
+  let shownOnce = false;
+  const render = () => {
+    if (run !== planRun) return;
+    itineraries = combineSources(onlineTrips, offlineTrips, arriveBy);
+    // Redraw only if the list (not one trip's steps) is on screen.
+    if (!shownOnce || onListView()) showList();
+    shownOnce = true;
+  };
+
+  // The app's own planner, on the phone (runs alongside the online one).
+  const offline = source === "online"
+    ? Promise.resolve()
+    : planOffline(ends.from, ends.to, when, arriveBy, cityOnly(), (text) => {
+        if (run !== planRun) return;
+        if (diag) diag.offlineInfo = text;
+        if (source === "offline" && !shownOnce) planMessage(text);
+        else refreshSearchDetails();
+      })
+        .then((r) => {
+          if (run !== planRun) return;
+          offlineTrips = r.trips;
+          if (diag) diag.offlineInfo = r.info;
+          render();
+        })
+        .catch((err) => {
+          if (run !== planRun) return;
+          if (diag) diag.offlineInfo = "offline planner error: " + err.message;
+          if (source === "offline") planMessage("Couldn't plan offline: " + err.message);
+          else refreshSearchDetails();
+        });
+  if (source === "offline") {
+    await offline;
+    return;
+  }
+
   try {
     let result;
     let allTrips = [];
     if (cityOnly()) {
-      planMessage("Searching for Tallinn city transport trips…");
+      if (!shownOnce) planMessage("Searching for Tallinn city transport trips…");
       const r = await planCityOnly(when, arriveBy);
       result = r.trips;
       allTrips = r.all;
@@ -568,8 +638,8 @@ async function runPlan() {
       result = allTrips.slice(0, MAX_TRIPS);
     }
     if (run !== planRun) return;
-    itineraries = result;
-    showList();
+    onlineTrips = result;
+    render();
     // Then the app's own check for tight connections the planner won't offer.
     if (diag) diag.ownRunning = true;
     refreshSearchDetails();
@@ -578,14 +648,18 @@ async function runPlan() {
     if (run !== planRun) return;
     if (diag) diag.ownRunning = false;
     if (extra.length) {
-      itineraries = mergeTrips(allTrips, extra, arriveBy);
-      // Redraw the list only if it's on screen and gained trips (don't close an open trip).
-      if (onListView() && diag.own) showList();
+      onlineTrips = mergeTrips(allTrips, extra, arriveBy);
+      if (diag.own) render();
     }
     refreshSearchDetails();
   } catch (err) {
     if (run !== planRun) return;
-    planMessage("Couldn't plan the trip: " + err.message);
+    if (offlineTrips.length) {
+      if (diag) diag.onlineError = err.message.slice(0, 160);
+      render();
+    } else {
+      planMessage("Couldn't plan the trip: " + err.message);
+    }
   }
 }
 
@@ -625,6 +699,9 @@ function showList() {
     top.appendChild(el("strong", "", `${clock(it.start)} → ${clock(it.end)}`));
     top.appendChild(el("span", "itin-dur", `${minutes(it.duration)} min`));
     li.appendChild(top);
+    if (plannerSource() === "both" && it.source) {
+      li.appendChild(el("span", `source-tag ${it.source}`, it.source === "offline" ? "Own planner" : "Peatus.ee"));
+    }
     li.appendChild(legStrip(it));
     const rides = it.legs.filter((l) => l.transit).length;
     const transfers = Math.max(0, rides - 1);
@@ -670,6 +747,8 @@ function searchDetails() {
   if (st && st.rides != null) {
     parts.push(`own check: ${st.rides} ride${st.rides === 1 ? "" : "s"}, ${st.asked} stops asked, ${st.better} faster`);
   }
+  if (diag?.offlineInfo) parts.push(diag.offlineInfo);
+  if (diag?.onlineError) parts.push(`online error: ${diag.onlineError}`);
   let text = "Search: " + parts.join(" · ");
   if (diag?.tightError) text += ` · tight search error: ${diag.tightError}`;
   if (diag?.ownError) text += ` · own check error: ${diag.ownError}`;
@@ -784,6 +863,13 @@ export function initPlanner(layoutCallback) {
     runPlan();
   });
   $("plan-time").addEventListener("change", runPlan);
+
+  $("plan-source").value = loadSource();
+  if (!offlineSupported()) $("plan-source").disabled = true;
+  $("plan-source").addEventListener("change", () => {
+    saveSource($("plan-source").value);
+    runPlan();
+  });
 
   $("plan-city-only").checked = loadCityOnly();
   $("plan-city-only").addEventListener("change", () => setCityOnly(cityOnly()));
