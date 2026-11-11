@@ -11,7 +11,7 @@
 // OpenStreetMap at 5 km/h, with no transfer margin; transfers with less than
 // two minutes to spare are labelled tight.
 
-import { decodePolyline } from "./peatus.js?v=42";
+import { decodePolyline } from "./peatus.js?v=43";
 
 const BASE = "data/";
 const CACHE = "acrosstransit-data-v1";

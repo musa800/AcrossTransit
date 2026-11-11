@@ -2,8 +2,8 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=42";
-import { lineColor as colorOf, legColor } from "./colors.js?v=42";
+import { getVehicles, lineKey } from "./vehicles.js?v=43";
+import { lineColor as colorOf, legColor } from "./colors.js?v=43";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -586,23 +586,24 @@ function renderStops(hide, { moving = false, load = true } = {}) {
               : stopsNear(center.lat, center.lng, STOP_RADIUS_M); // already within 2 km
   if (!moving) lastDrawCenter = center;
   if (!hide) {
+    const look = stopLook(map.getZoom(), !!small);
     for (const s of source) {
       keep.add(s.gtfsId);
       const existing = stopDots.get(s.gtfsId);
-      if (existing && existing._small === !!small) continue;
+      if (existing && existing._look === look.key) continue;
       if (existing) existing.remove();
       const dot = L.circleMarker([s.lat, s.lon], {
         renderer: stopRenderer,
         pane: "stopsPane",
         interactive: false,
-        radius: small ? 4 : 6,
+        radius: look.radius,
         color: "#ffffff",
-        weight: small ? 1.5 : 2,
+        weight: look.weight,
         fillColor: "#3a3f47",
         fillOpacity: 1,
       }).addTo(map);
       dot._stop = s;
-      dot._small = !!small;
+      dot._look = look.key;
       stopDots.set(s.gtfsId, dot);
     }
   }
@@ -612,6 +613,23 @@ function renderStops(hide, { moving = false, load = true } = {}) {
       stopDots.delete(id);
     }
   }
+}
+
+/**
+ * Stop dot size by zoom: full size close in, much smaller zoomed out.
+ * small: the faded stops shown along a line or trip (a bit smaller again).
+ */
+const STOP_SIZES = [ // [from zoom, radius, outline]
+  [17, 6, 2],
+  [16, 4.5, 1.5],
+  [15, 3.2, 1.2],
+  [14, 2.4, 1],
+  [0, 1.8, 0.8],
+];
+function stopLook(zoom, small) {
+  const [, radius, weight] = STOP_SIZES.find(([z]) => zoom >= z);
+  const k = small ? 0.7 : 1;
+  return { radius: radius * k, weight: Math.max(0.6, weight * k), key: `${radius}|${small}` };
 }
 
 /** A tap on the map (not on a bus or a line): find the nearest stop dot, if close enough. */
