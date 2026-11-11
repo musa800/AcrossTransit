@@ -2,7 +2,8 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=38";
+import { getVehicles, lineKey } from "./vehicles.js?v=39";
+import { lineColor as colorOf, legColor } from "./colors.js?v=39";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -10,8 +11,6 @@ const CENTER = [59.437, 24.7536]; // Tallinn old town
 const STOP_RADIUS_M = 2000;  // stops: shown within this distance of the map centre (no stop chosen)
 const HIDE_WIDTH_M = 25000;  // when the visible map is this wide or wider, hide stops and vehicles
 
-// Colours for lines (route shapes, their vehicles, badges in the panels).
-const LINE_COLORS = ["#e6194b", "#4363d8", "#f58231", "#3cb44b", "#911eb4", "#f032e6", "#008080", "#9a6324", "#800000", "#000075"];
 
 let map;
 let stopRenderer; // stops are painted on one canvas (much lighter than many HTML markers)
@@ -170,11 +169,11 @@ function preloadAround(lat, lon, radiusM = 5000) {
       addStops(stops);
       const t = Date.now();
       for (const k of missing) {
-        cells.set(k, "done");
-        cellTime.set(k, t);
+        cells.set(k, stops.offline ? "offline" : "done");
+        if (!stops.offline) cellTime.set(k, t);
       }
       render();
-      scheduleSave();
+      if (!stops.offline) scheduleSave();
     })
     .catch(() => {
       for (const k of missing) if (cells.get(k) === "loading") cells.delete(k);
@@ -220,6 +219,7 @@ export function initMap(el, statusCallback) {
   L.control.zoom({ position: "bottomright" }).addTo(map);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
+    crossOrigin: true, // lets the service worker keep viewed map squares for offline use
     attribution: "© OpenStreetMap contributors",
   }).addTo(map);
 
@@ -297,14 +297,6 @@ export function resizeMap() {
   if (mode === "stops" && selected) map.panTo([selected.stop.lat, selected.stop.lon]);
 }
 
-/** The colour given to a line of the chosen stop, or "" if none. */
-export function lineColor(lineMode, line) {
-  const key = lineKey(lineMode, line);
-  if (selected) return selected.colors.get(key) || "";
-  if (nearView && nearView.filter === key) return nearView.colors.get(key) || "";
-  return "";
-}
-
 // ---------- Drawing ----------
 
 function tooWide() {
@@ -323,6 +315,10 @@ function render() {
 
 function updateStatus(hide) {
   const vf = vehicleFilter();
+  if (!navigator.onLine && !hide && (vf || mode === "stops")) {
+    onStatus(mode === "plan" ? "Offline · no live buses" : "Offline · timetable only, no live buses", false);
+    return;
+  }
   if (mode === "plan") {
     if (!vf) onStatus("Tap the map or a stop to set start or destination", false);
     else if (hide) onStatus("Zoom in to see the trip's buses", false);
@@ -389,6 +385,11 @@ function popupText(v) {
 
 async function refresh() {
   if (document.hidden || !vehicleFilter()) return;
+  if (!navigator.onLine) {
+    lastVehicles = [];
+    render();
+    return;
+  }
   try {
     lastVehicles = await getVehicles();
   } catch (err) {
@@ -456,6 +457,20 @@ export function setStopSource(loader, stopTapCallback) {
   render();
 }
 
+/**
+ * Back online: forget stops that came from the offline timetable, so the
+ * normal ones are loaded again.
+ */
+export function forgetOfflineStops() {
+  for (const [k, v] of cells) if (v === "offline") cells.delete(k);
+  for (const [id, st] of stopsById) {
+    if (!st.offline) continue;
+    stopsById.delete(id);
+    stopGrid.get(`${Math.floor(st.lat / GRID_LAT)}:${Math.floor(st.lon / GRID_LON)}`)?.delete(id);
+  }
+  render();
+}
+
 /** The map centre as { lat, lon }. */
 export function getCenter() {
   const c = map.getCenter();
@@ -485,10 +500,14 @@ function ensureCells(center) {
       stopLoader(box)
         .then((stops) => {
           addStops(stops);
-          cells.set(key, "done");
-          cellTime.set(key, Date.now());
+          if (stops.offline) {
+            cells.set(key, "offline"); // from the offline timetable: not remembered
+          } else {
+            cells.set(key, "done");
+            cellTime.set(key, Date.now());
+            scheduleSave();
+          }
           render();
-          scheduleSave();
         })
         .catch(() => cells.delete(key)); // try again next time the map moves here
     }
@@ -667,7 +686,7 @@ export function showStopRoutes(patterns) {
   for (const p of patterns) {
     const key = lineKey(p.mode, p.line);
     if (!selected.colors.has(key)) {
-      selected.colors.set(key, LINE_COLORS[selected.colors.size % LINE_COLORS.length]);
+      selected.colors.set(key, colorOf(p.mode, p.line, p.operator || "", selected.stop));
     }
   }
   drawSelection();
@@ -714,7 +733,7 @@ export function showRoute(route, direction) {
   clearNearRoutes(false);
   routeView = {
     key: lineKey(route.mode, route.line),
-    color: LINE_COLORS[0],
+    color: colorOf(route.mode, route.line, route.operator || "", direction.stops?.[0] || null),
     layer: L.layerGroup(),
     stops: direction.stops,
   };
@@ -765,7 +784,7 @@ export function showNearRoutes(patterns) {
   for (const p of patterns) {
     const key = lineKey(p.mode, p.line);
     if (!nearView.colors.has(key)) {
-      nearView.colors.set(key, LINE_COLORS[nearView.colors.size % LINE_COLORS.length]);
+      nearView.colors.set(key, colorOf(p.mode, p.line, p.operator || "", p.stops?.[0] || null));
     }
   }
   drawNear();
@@ -833,7 +852,7 @@ export function colorsForLegs(legs) {
   for (const l of legs) {
     if (!l.transit) continue;
     const key = lineKey(l.mode, l.line);
-    if (!colors.has(key)) colors.set(key, LINE_COLORS[colors.size % LINE_COLORS.length]);
+    if (!colors.has(key)) colors.set(key, legColor(l));
   }
   return colors;
 }

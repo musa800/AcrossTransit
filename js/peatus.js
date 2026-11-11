@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=38";
+import { fetchChecked } from "./net.js?v=39";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -97,14 +97,14 @@ export async function getStopDepartures(stopId, count = 20) {
   const data = await gql(
     `query ($id: String!, $n: Int!) {
        stop(id: $id) {
-         routes { shortName mode }
+         routes { shortName mode agency { name } }
          stoptimesWithoutPatterns(numberOfDepartures: $n, omitNonPickups: true) {
            serviceDay
            scheduledDeparture
            realtimeDeparture
            realtime
            headsign
-           trip { route { shortName mode } }
+           trip { route { shortName mode agency { name } } }
          }
        }
      }`,
@@ -112,13 +112,14 @@ export async function getStopDepartures(stopId, count = 20) {
   );
   const stop = data.stop || {};
   return {
-    routes: stop.routes || [],
+    routes: (stop.routes || []).map((r) => ({ shortName: r.shortName, mode: r.mode, operator: r.agency?.name || "" })),
     departures: (stop.stoptimesWithoutPatterns || []).map((d) => ({
       time: d.serviceDay + (d.realtime ? d.realtimeDeparture : d.scheduledDeparture),
       realtime: !!d.realtime,
       headsign: d.headsign || "",
       line: d.trip?.route?.shortName || "?",
       mode: d.trip?.route?.mode || "OTHER",
+      operator: d.trip?.route?.agency?.name || "",
     })),
   };
 }
@@ -133,7 +134,7 @@ export async function getStopPatterns(stopId) {
        stop(id: $id) {
          patterns {
            headsign
-           route { shortName mode }
+           route { shortName mode agency { name } }
            patternGeometry { points }
            stops { gtfsId name code desc lat lon }
          }
@@ -146,6 +147,7 @@ export async function getStopPatterns(stopId) {
     .map((p) => ({
       line: p.route?.shortName || "?",
       mode: p.route?.mode || "OTHER",
+      operator: p.route?.agency?.name || "",
       headsign: p.headsign || "",
       points: decodePolyline(p.patternGeometry?.points || ""),
       stops: p.stops || [],
@@ -163,7 +165,7 @@ export async function getStopLineDepartures(stopId, mode, line, count = 20) {
     `query ($id: String!, $n: Int!) {
        stop(id: $id) {
          stoptimesForPatterns(numberOfDepartures: $n, omitNonPickups: true) {
-           pattern { route { shortName mode } }
+           pattern { route { shortName mode agency { name } } }
            stoptimes { serviceDay scheduledDeparture realtimeDeparture realtime headsign }
          }
        }
@@ -180,6 +182,7 @@ export async function getStopLineDepartures(stopId, mode, line, count = 20) {
         headsign: d.headsign || "",
         line,
         mode,
+        operator: group.pattern.route.agency?.name || "",
       });
     }
   }
@@ -202,7 +205,7 @@ export async function getStopLineSchedule(stopId, mode, line, date) {
     `query ($id: String!, $date: String!) {
        stop(id: $id) {
          stoptimesForServiceDate(date: $date, omitNonPickups: true) {
-           pattern { headsign route { shortName mode } }
+           pattern { headsign route { shortName mode agency { name } } }
            stoptimes { serviceDay scheduledDeparture headsign }
          }
        }
@@ -398,7 +401,7 @@ export async function getNearbyDepartures(pos, radius = 200, count = 20) {
          gtfsId
          stoptimesWithoutPatterns(numberOfDepartures: $n, omitNonPickups: true) {
            serviceDay scheduledDeparture realtimeDeparture realtime headsign
-           trip { route { shortName mode } }
+           trip { route { shortName mode agency { name } } }
          }
        }
      }`,
@@ -416,6 +419,7 @@ export async function getNearbyDepartures(pos, radius = 200, count = 20) {
         headsign: d.headsign || "",
         line: d.trip?.route?.shortName || "?",
         mode: d.trip?.route?.mode || "OTHER",
+        operator: d.trip?.route?.agency?.name || "",
         stop,
       });
     }
@@ -437,7 +441,7 @@ export async function getStopsPatterns(stopIds) {
        stops(ids: $ids) {
          patterns {
            code headsign
-           route { shortName mode }
+           route { shortName mode agency { name } }
            patternGeometry { points }
            stops { gtfsId name code desc lat lon }
          }
@@ -455,6 +459,7 @@ export async function getStopsPatterns(stopIds) {
         code: p.code,
         line: p.route?.shortName || "?",
         mode: p.route?.mode || "OTHER",
+        operator: p.route?.agency?.name || "",
         headsign: p.headsign || "",
         points,
         stops: p.stops || [],

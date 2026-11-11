@@ -11,7 +11,7 @@
 // OpenStreetMap at 5 km/h, with no transfer margin; transfers with less than
 // two minutes to spare are labelled tight.
 
-import { decodePolyline } from "./peatus.js?v=38";
+import { decodePolyline } from "./peatus.js?v=39";
 
 const BASE = "data/";
 const CACHE = "acrosstransit-data-v1";
@@ -763,4 +763,287 @@ export async function planOffline(from, to, when, arriveBy, cityOnly, onStatus =
   const ms = Math.round(performance.now() - t0);
   const built = report.generated ? new Date(report.generated).toLocaleString("et-EE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "?";
   return { trips, info: `offline: ${trips.length} trips in ${ms} ms, data from ${built}, ${access.size}/${egress.size} stops in walking range` };
+}
+
+// ---------------------------------------------------------------- the map without internet
+//
+// Stops, departures, lines and schedules from the offline timetable, in the
+// same shapes the online functions in peatus.js return. Stops from here have
+// ids "off:<n>" so the app knows they're from the offline data.
+
+const OFF = "off:";
+
+function offStop(i, extra = {}) {
+  const s = stops[i];
+  return { gtfsId: OFF + i, name: s.name, code: s.code, desc: s.desc, lat: s.lat, lon: s.lon, offline: true, ...extra };
+}
+
+/** True for stops that came from the offline timetable. */
+export function isOfflineStop(stop) {
+  return !!stop && String(stop.gtfsId || "").startsWith(OFF);
+}
+
+/** The days the offline timetable covers: Set of "yyyymmdd". */
+export async function offlineDays() {
+  await loadBasics();
+  return new Set((report.days || []).map((d) => d.date));
+}
+
+/** Stops in a box (from the offline data); the list is marked .offline. */
+export async function offlineStopsInBox(box) {
+  await loadBasics();
+  const out = [];
+  stops.forEach((s, i) => {
+    if (s.lat >= box.minLat && s.lat <= box.maxLat && s.lon >= box.minLon && s.lon <= box.maxLon) out.push(offStop(i));
+  });
+  out.offline = true;
+  return out;
+}
+
+const norm = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
+
+/**
+ * The offline stop for a stop on the map: itself if it came from here,
+ * otherwise the same code, else the nearest one with the same name (within
+ * 80 m), else the nearest within 25 m. -1 if none.
+ */
+async function matchStop(stop) {
+  await loadBasics();
+  if (isOfflineStop(stop)) return Number(stop.gtfsId.slice(OFF.length));
+  const name = norm(stop.name);
+  let byCode = -1, byName = -1, byPos = -1, dName = 80, dPos = 25;
+  for (let i = 0; i < stops.length; i++) {
+    const s = stops[i];
+    if (Math.abs(s.lat - stop.lat) > 0.001) continue;
+    const d = metres(stop.lat, stop.lon, s.lat, s.lon);
+    if (d > 150) continue;
+    if (stop.code && s.code && s.code === stop.code) byCode = i;
+    if (norm(s.name) === name && d < dName) { dName = d; byName = i; }
+    if (d < dPos) { dPos = d; byPos = i; }
+  }
+  return byCode >= 0 ? byCode : byName >= 0 ? byName : byPos;
+}
+
+function routeInfo(raw, ri) {
+  const r = raw.routes[ri];
+  return { shortName: r[0], mode: MODE_OF[r[2]] || "BUS", operator: raw.agencies[r[3]] || "" };
+}
+
+/** Day files for today and tomorrow (if kept or downloadable), with their midnights. */
+async function nearDays(now) {
+  const out = [];
+  for (let k = 0; k < 2; k++) {
+    const d = new Date(now);
+    d.setHours(12, 0, 0, 0);
+    d.setDate(d.getDate() + k);
+    const ymd = ymdOf(d);
+    if (!report.days?.some((x) => x.date === ymd)) continue;
+    try {
+      out.push({ day: await loadDay(ymd), midnight: localMidnight(d), later: k > 0 });
+    } catch {
+      /* not kept on this phone */
+    }
+  }
+  if (!out.length) throw new Error("no offline timetable kept for today");
+  return out;
+}
+
+/** First connection index departing at or after s. */
+function firstAt(day, s) {
+  let lo = 0, hi = day.count;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (day.dep[mid] < s) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** Departures from a set of stop indices, soonest first: [{ time, si, trip, day }]. */
+function departuresFrom(daysList, set, nowUnix, count, keep) {
+  const out = [];
+  for (const { day, midnight, later } of daysList) {
+    const raw = day.raw;
+    for (let c = firstAt(day, nowUnix - midnight - 30); c < day.count && out.length < count; c++) {
+      if (!set.has(day.from[c])) continue;
+      const tr = raw.trips[day.trip[c]];
+      if (later && tr[3] < 0) continue; // started the day before: already in that day's file
+      if (keep && !keep(raw, tr)) continue;
+      out.push({ time: midnight + day.dep[c], si: day.from[c], tr, raw });
+    }
+    if (out.length >= count) break;
+  }
+  return out;
+}
+
+function toDeparture(d, extra = {}) {
+  const info = routeInfo(d.raw, d.tr[0]);
+  return {
+    time: d.time,
+    realtime: false,
+    headsign: d.raw.headsigns[d.tr[4]] || "",
+    line: info.shortName,
+    mode: info.mode,
+    operator: info.operator,
+    ...extra,
+  };
+}
+
+const sameLine = (line) => (raw, tr) => {
+  const r = raw.routes[tr[0]];
+  return r[0] === line.shortName && (MODE_OF[r[2]] || "BUS") === line.mode;
+};
+
+/** Lines (routes) that leave from these stops on these days. */
+function linesAt(daysList, set) {
+  const seen = new Map();
+  for (const { day } of daysList) {
+    const raw = day.raw;
+    const pats = new Set();
+    raw.patterns.forEach((pat, p) => {
+      for (let i = 0; i < pat.length - 1; i++) if (set.has(pat[i])) { pats.add(p); break; }
+    });
+    for (const tr of raw.trips) {
+      if (!pats.has(tr[1])) continue;
+      const info = routeInfo(raw, tr[0]);
+      seen.set(`${info.mode}|${info.shortName}`, info);
+    }
+  }
+  return [...seen.values()];
+}
+
+/**
+ * Like getStopDepartures / getStopLineDepartures, from the offline timetable.
+ * line: { mode, shortName } or null. Returns { routes, departures }.
+ */
+export async function offlineStopDepartures(stop, line = null, count = 20) {
+  const si = await matchStop(stop);
+  if (si < 0) throw new Error("this stop isn't in the offline timetable");
+  const now = Math.floor(Date.now() / 1000);
+  const daysList = await nearDays(new Date());
+  const set = new Set([si]);
+  const deps = departuresFrom(daysList, set, now, count, line ? sameLine(line) : null).map((d) => toDeparture(d));
+  return { routes: linesAt(daysList, set), departures: deps };
+}
+
+/**
+ * Like getStopPatterns / getStopsPatterns: the routes through these stops,
+ * drawn along the road where a route line is known.
+ * Returns [{ code, line, mode, operator, headsign, points, stops }].
+ */
+export async function offlinePatterns(stopList) {
+  await loadBasics();
+  await loadShapes();
+  const idx = [];
+  for (const s of stopList) {
+    const i = await matchStop(s);
+    if (i >= 0) idx.push(i);
+  }
+  const set = new Set(idx);
+  const { day } = (await nearDays(new Date()))[0];
+  const raw = day.raw;
+  const heads = new Map(); // pattern -> { route, headsign counts }
+  raw.trips.forEach((tr) => {
+    const p = tr[1];
+    let h = heads.get(p);
+    if (!h) {
+      const pat = raw.patterns[p];
+      let through = false;
+      for (let i = 0; i < pat.length; i++) if (set.has(pat[i])) { through = true; break; }
+      if (!through) { heads.set(p, null); return; }
+      heads.set(p, (h = { route: tr[0], counts: new Map() }));
+    }
+    if (h) h.counts.set(tr[4], (h.counts.get(tr[4]) || 0) + 1);
+  });
+  const out = [];
+  for (const [p, h] of heads) {
+    if (!h) continue;
+    const pat = raw.patterns[p];
+    const info = routeInfo(raw, h.route);
+    const hs = [...h.counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    const si = raw.pshape?.[p];
+    const points = shapes && si != null && si >= 0 ? shapeLine(si) : pat.map((i) => [stops[i].lat, stops[i].lon]);
+    out.push({
+      code: `off:${p}`,
+      line: info.shortName,
+      mode: info.mode,
+      operator: info.operator,
+      headsign: raw.headsigns[hs] || "",
+      points,
+      stops: pat.map((i) => offStop(i)),
+    });
+  }
+  return out.filter((p) => p.points.length > 1);
+}
+
+/** Like getNearbyDepartures, from the offline data. */
+export async function offlineNearby(pos, radius = 200, count = 20) {
+  await loadBasics();
+  const near = [];
+  stops.forEach((s, i) => {
+    if (Math.abs(s.lat - pos.lat) > 0.01) return;
+    const d = metres(pos.lat, pos.lon, s.lat, s.lon);
+    if (d <= radius) near.push(offStop(i, { distance: d }));
+  });
+  if (!near.length) return { stops: near, departures: [], offline: true };
+  const byIdx = new Map(near.map((s) => [Number(s.gtfsId.slice(OFF.length)), s]));
+  const daysList = await nearDays(new Date());
+  const now = Math.floor(Date.now() / 1000);
+  const deps = departuresFrom(daysList, new Set(byIdx.keys()), now, count * near.length, null)
+    .map((d) => toDeparture(d, { stop: byIdx.get(d.si) }));
+  return { stops: near, departures: deps, offline: true };
+}
+
+/** Like getStopLineSchedule, from the offline data. Returns [{ secs, time, headsign }]. */
+export async function offlineSchedule(stop, mode, line, date) {
+  const si = await matchStop(stop);
+  if (si < 0) throw new Error("this stop isn't in the offline timetable");
+  const ymd = ymdOf(date);
+  if (!report.days?.some((x) => x.date === ymd)) throw new Error("no offline timetable for that day");
+  const day = await loadDay(ymd);
+  const raw = day.raw;
+  const midnight = localMidnight(date);
+  const want = sameLine({ mode, shortName: line });
+  const rows = [];
+  raw.trips.forEach((tr, ti) => {
+    if (tr[3] < 0 || !want(raw, tr)) return; // started the day before: that day's schedule
+    const conns = day.tripConns[ti];
+    for (let k = 0; k < conns.length; k++) {
+      const c = conns[k];
+      if (day.from[c] !== si) continue;
+      rows.push({ secs: day.dep[c], time: midnight + day.dep[c], headsign: raw.headsigns[tr[4]] || "" });
+    }
+  });
+  rows.sort((a, b) => a.secs - b.secs);
+  return rows;
+}
+
+/**
+ * Keep the offline data up to date on the phone, so the map and planner work
+ * without internet: the timetable days, stops, route lines and the walking map
+ * of the area you're in. Runs at most once a day; files still fresh are skipped.
+ */
+const PREFETCH_KEY = "acrosstransit.offlinePrefetch";
+export async function prefetchOffline(pos) {
+  if (!offlineSupported() || !navigator.onLine) return;
+  const today = ymdOf(new Date());
+  try {
+    if (localStorage.getItem(PREFETCH_KEY) === today) return;
+  } catch {
+    /* fine: just fetch */
+  }
+  await loadBasics();
+  await loadShapes();
+  for (const d of report.days || []) {
+    if (d.date < today) continue;
+    await getFile(`day-${d.date}.json.gz`, MAX_AGE.day).catch(() => {});
+  }
+  const region = pos ? areaFor(pos.lat, pos.lon) : null;
+  if (region) await getFile(region.file, MAX_AGE.walk).catch(() => {});
+  dropOldDays(today).catch(() => {});
+  try {
+    localStorage.setItem(PREFETCH_KEY, today);
+  } catch {
+    /* fetched again next time */
+  }
 }

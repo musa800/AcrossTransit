@@ -4,15 +4,20 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule, getNearbyDepartures, getStopsPatterns,
-} from "./peatus.js?v=38";
+} from "./peatus.js?v=39";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
-  setStopSource, getCenter, showStopRoutes, setLineFilter, lineColor, setMode,
+  setStopSource, getCenter, showStopRoutes, setLineFilter, setMode, forgetOfflineStops,
   initLocation, getMyPosition, getLocationError, showRoute, clearRoute,
   showNearRoutes, setNearFilter, clearNearRoutes, setNearStops,
-} from "./map.js?v=38";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=38";
-import { initRoutes, enterRoutes } from "./routes.js?v=38";
+} from "./map.js?v=39";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=39";
+import { initRoutes, enterRoutes } from "./routes.js?v=39";
+import { lineColor } from "./colors.js?v=39";
+import {
+  offlineSupported, isOfflineStop, offlineStopDepartures, offlinePatterns, offlineNearby,
+  offlineSchedule, offlineDays, offlineStopsInBox, prefetchOffline,
+} from "./offline.js?v=39";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -52,6 +57,9 @@ function switchTab(tab) {
     setMode(tab === "plan" ? "plan" : "stops");
     updateLayout(false);
     showMap();
+    // Chip rows can only be measured while visible.
+    if (tab === "map" && currentStop) renderLineChips();
+    if (tab === "map" && nearPos) renderNearChips();
   } else {
     hideMap();
   }
@@ -128,14 +136,52 @@ function formatClock(unixSeconds) {
   return new Date(unixSeconds * 1000).toLocaleTimeString("et-EE", { hour: "2-digit", minute: "2-digit" });
 }
 
-/** A line badge: the selected stop's line colour if it has one, else the vehicle-type colour. */
-function makeBadge(line, mode, extraClass = "") {
+/** A line badge in the line's own colour (where: a stop on the line, if known). */
+function makeBadge(line, mode, extraClass = "", operator = "", where = null) {
   const span = document.createElement("span");
   span.className = `badge ${MODES.includes(mode) ? mode : "OTHER"} ${extraClass}`.trim();
   span.textContent = line;
-  const color = lineColor(mode, line);
-  if (color) span.style.background = color;
+  span.style.background = lineColor(mode, line, operator, where);
   return span;
+}
+
+// Busy stops: at most two rows of line chips, then a "+N" chip that shows the rest.
+const chipsOpen = { stop: false, near: false };
+
+function limitChips(box, which, rerender) {
+  const chips = [...box.querySelectorAll(".chip-badge")];
+  if (!chips.length) return;
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "chip-more";
+  toggle.addEventListener("click", () => {
+    chipsOpen[which] = !chipsOpen[which];
+    rerender();
+  });
+  box.insertBefore(toggle, box.querySelector(".sched-btn"));
+  if (chipsOpen[which]) {
+    toggle.textContent = "Less";
+    return;
+  }
+  const rows = () => {
+    const tops = new Set();
+    for (const e of box.children) if (e.style.display !== "none") tops.add(e.offsetTop);
+    return tops.size;
+  };
+  toggle.style.display = "none";
+  if (rows() <= 2) {
+    toggle.remove();
+    return;
+  }
+  toggle.style.display = "";
+  toggle.textContent = `+${chips.length}`;
+  let hidden = 0;
+  for (let i = chips.length - 1; i >= 0 && rows() > 2; i--) {
+    if (chips[i].classList.contains("on")) continue; // the chosen line stays visible
+    chips[i].style.display = "none";
+    hidden++;
+  }
+  toggle.textContent = `+${hidden}`;
 }
 
 function fillDepartureList(list, deps) {
@@ -149,7 +195,7 @@ function fillDepartureList(list, deps) {
     const mins = Math.round((d.time - now) / 60);
     const li = document.createElement("li");
     li.className = "dep";
-    li.appendChild(makeBadge(d.line, d.mode));
+    li.appendChild(makeBadge(d.line, d.mode, "", d.operator, d.stop || currentStop));
     const head = document.createElement("span");
     head.className = "headsign";
     head.textContent = d.headsign;
@@ -179,7 +225,7 @@ function renderLineChips() {
     .sort((a, b) => String(a.shortName).localeCompare(String(b.shortName), "et", { numeric: true }));
   for (const r of lines) {
     const isOn = selectedLine && selectedLine.mode === r.mode && selectedLine.shortName === r.shortName;
-    const chip = makeBadge(r.shortName, r.mode, "chip-badge");
+    const chip = makeBadge(r.shortName, r.mode, "chip-badge", r.operator, currentStop);
     chip.setAttribute("role", "button");
     chip.tabIndex = 0;
     if (selectedLine) chip.classList.add(isOn ? "on" : "faded");
@@ -194,6 +240,7 @@ function renderLineChips() {
     btn.addEventListener("click", openSchedule);
     box.appendChild(btn);
   }
+  limitChips(box, "stop", renderLineChips);
 }
 
 /** Show one line only (route = {mode, shortName}), or all lines with null. */
@@ -211,6 +258,30 @@ function chooseLine(route) {
 
 let lastLoadedAt = 0;   // when lastDepartures arrived (ms)
 let showingStale = false;
+let depSource = "online"; // where the shown departures came from: "online" or "offline" (timetable)
+
+/** Without internet (or for stops from the offline data), use the offline timetable. */
+function useOffline(stop) {
+  return isOfflineStop(stop) || !navigator.onLine;
+}
+
+/** Departures (and on first load the stop's lines): online, else the offline timetable. */
+async function loadDepartures(stop, line, firstLoad) {
+  const offline = async () =>
+    ({ ...(await offlineStopDepartures(stop, firstLoad ? null : line, 20)), source: "offline" });
+  if (useOffline(stop)) return offline();
+  try {
+    if (line && !firstLoad) return { departures: await getStopLineDepartures(stop.gtfsId, line.mode, line.shortName, 20), source: "online" };
+    return { ...(await getStopDepartures(stop.gtfsId, 20)), source: "online" };
+  } catch (err) {
+    if (!offlineSupported()) throw err;
+    try {
+      return await offline();
+    } catch {
+      throw err;
+    }
+  }
+}
 
 /**
  * Show lastDepartures in both lists. stale: the latest refresh failed (e.g.
@@ -224,11 +295,13 @@ function renderAllDepartures(stale = showingStale) {
   fillDepartureList($("departures"), deps);
   fillDepartureList($("sheet-departures"), deps);
   const at = new Date(lastLoadedAt).toLocaleTimeString("et-EE", { hour: "2-digit", minute: "2-digit" });
-  const text = stale ? `Last updated ${at} · offline, not live` : `Updated ${at}`;
+  const fromTimetable = !stale && depSource === "offline";
+  const text = stale ? `Last updated ${at} · offline, not live`
+    : fromTimetable ? "Offline timetable · not live" : `Updated ${at}`;
   $("updated").textContent = text;
-  $("updated").classList.toggle("stale", stale);
-  $("sheet-updated").textContent = stale ? text : "";
-  $("sheet-updated").hidden = !stale;
+  $("updated").classList.toggle("stale", stale || fromTimetable);
+  $("sheet-updated").textContent = stale || fromTimetable ? text : "";
+  $("sheet-updated").hidden = !(stale || fromTimetable);
 }
 
 async function refreshDepartures(firstLoad = false) {
@@ -236,15 +309,10 @@ async function refreshDepartures(firstLoad = false) {
   const stop = currentStop;
   const line = selectedLine;
   try {
-    let routes = null;
-    let departures;
-    if (line && !firstLoad) {
-      departures = await getStopLineDepartures(stop.gtfsId, line.mode, line.shortName, 20);
-    } else {
-      ({ routes, departures } = await getStopDepartures(stop.gtfsId, 20));
-    }
+    const { routes, departures, source } = await loadDepartures(stop, line, firstLoad);
     // Ignore the answer if another stop or line was chosen meanwhile.
     if (stop !== currentStop || line !== selectedLine) return;
+    depSource = source;
     lastDepartures = departures;
     lastLoadedAt = Date.now();
     if (firstLoad) {
@@ -272,7 +340,10 @@ async function refreshDepartures(firstLoad = false) {
 }
 
 function loadRoutes(stop) {
-  getStopPatterns(stop.gtfsId)
+  const patterns = useOffline(stop) || depSource === "offline"
+    ? offlinePatterns([stop])
+    : getStopPatterns(stop.gtfsId).catch((err) => (offlineSupported() ? offlinePatterns([stop]) : Promise.reject(err)));
+  patterns
     .then((patterns) => {
       if (stop !== currentStop) return;
       showStopRoutes(patterns);
@@ -294,6 +365,7 @@ function openStop(stop) {
   showingStale = false;
   $("sheet-updated").hidden = true;
   selectedLine = null;
+  chipsOpen.stop = false;
 
   // Stops tab
   $("stop-name").textContent = stop.name;
@@ -346,6 +418,17 @@ const SCHED_VISIBLE = 3;
 let scheduleDay = 0;        // days after today
 let schedWindowStart = 0;   // first day shown in the row
 const schedCache = new Map(); // day -> rows, while the schedule is open
+let schedOffline = false;     // schedule from the offline timetable
+let schedDays = null;         // Set of "yyyymmdd" the offline timetable covers (when offline)
+
+function ymdOf(d) {
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Without internet, only the days in the offline timetable can be shown. */
+function dayAvailable(offset) {
+  return !schedOffline || !schedDays || schedDays.has(ymdOf(dayDate(offset)));
+}
 
 function dayDate(offset) {
   const d = new Date();
@@ -380,6 +463,7 @@ function renderDayRow() {
     b.type = "button";
     b.className = "day-btn" + (i === scheduleDay ? " active" : "");
     b.textContent = dayLabel(i);
+    b.disabled = !dayAvailable(i);
     b.addEventListener("click", () => loadSchedule(i));
     row.appendChild(b);
   }
@@ -388,7 +472,7 @@ function renderDayRow() {
   next.className = "day-arrow";
   next.textContent = ">";
   next.setAttribute("aria-label", "Next day");
-  next.disabled = scheduleDay === SCHED_DAYS - 1;
+  next.disabled = scheduleDay === SCHED_DAYS - 1 || !dayAvailable(scheduleDay + 1);
   next.addEventListener("click", () => loadSchedule(scheduleDay + 1));
   row.appendChild(next);
 }
@@ -398,9 +482,18 @@ function openSchedule() {
   $("sched-title").textContent = `Line ${selectedLine.shortName}`;
   $("sched-stop").textContent = currentStop.name;
   const badge = $("sched-badge");
-  badge.replaceWith(Object.assign(makeBadge(selectedLine.shortName, selectedLine.mode), { id: "sched-badge" }));
+  badge.replaceWith(Object.assign(
+    makeBadge(selectedLine.shortName, selectedLine.mode, "", selectedLine.operator, currentStop), { id: "sched-badge" }));
   schedCache.clear();
   schedWindowStart = 0;
+  schedOffline = useOffline(currentStop) || depSource === "offline";
+  schedDays = null;
+  if (schedOffline) {
+    offlineDays().then((set) => {
+      schedDays = set;
+      renderDayRow();
+    }).catch(() => {});
+  }
   $("schedule-view").hidden = false;
   loadSchedule(0);
 }
@@ -422,8 +515,12 @@ async function loadSchedule(dayOffset) {
   body.innerHTML = `<p class="muted">Loading…</p>`;
   const stop = currentStop;
   const line = selectedLine;
+  const offline = () => offlineSchedule(stop, line.mode, line.shortName, dayDate(dayOffset));
   try {
-    const rows = await getStopLineSchedule(stop.gtfsId, line.mode, line.shortName, dayDate(dayOffset));
+    const rows = schedOffline
+      ? await offline()
+      : await getStopLineSchedule(stop.gtfsId, line.mode, line.shortName, dayDate(dayOffset))
+        .catch((err) => (offlineSupported() ? offline() : Promise.reject(err)));
     if (stop !== currentStop || line !== selectedLine) return;
     schedCache.set(dayOffset, rows);
     if (dayOffset !== scheduleDay) return;
@@ -519,7 +616,11 @@ initPlanner(() => {
 });
 
 // The map loads stops itself, a small area at a time, only when zoomed in.
-setStopSource(getStopsInBox, openStop);
+// Without internet they come from the offline timetable.
+setStopSource((box) => {
+  if (!navigator.onLine) return offlineStopsInBox(box);
+  return getStopsInBox(box).catch((err) => (offlineSupported() ? offlineStopsInBox(box) : Promise.reject(err)));
+}, openStop);
 
 $("centre-btn").addEventListener("click", () => centreOnMe((msg) => mapStatus(msg, true)));
 
@@ -555,8 +656,8 @@ function renderNear(stale) {
   const n = stops.length;
   $("near-note").textContent =
     `${n} ${n === 1 ? "stop" : "stops"} within ${NEAR_RADIUS_M} m · ` +
-    (stale ? `last updated ${when}, offline, not live` : `updated ${when}`);
-  $("near-note").classList.toggle("stale", stale);
+    (stale ? `last updated ${when}, offline, not live` : nearLast.offline ? "offline timetable, not live" : `updated ${when}`);
+  $("near-note").classList.toggle("stale", stale || !!nearLast.offline);
   if (!n) {
     list.innerHTML = `<li class="muted">No stops within ${NEAR_RADIUS_M} m of you.</li>`;
     return;
@@ -571,7 +672,7 @@ function renderNear(stale) {
     const mins = Math.round((d.time - now) / 60);
     const li = document.createElement("li");
     li.className = "dep near-dep";
-    li.appendChild(makeBadge(d.line, d.mode));
+    li.appendChild(makeBadge(d.line, d.mode, "", d.operator, d.stop));
     const head = document.createElement("span");
     head.className = "headsign";
     const dest = document.createElement("span");
@@ -596,7 +697,11 @@ async function refreshNear() {
   if (!nearPos) return;
   const run = ++nearRun;
   try {
-    const r = await getNearbyDepartures(nearPos, NEAR_RADIUS_M, 20);
+    const offline = () => offlineNearby(nearPos, NEAR_RADIUS_M, 20);
+    const r = !navigator.onLine
+      ? await offline()
+      : await getNearbyDepartures(nearPos, NEAR_RADIUS_M, 20)
+        .catch((err) => (offlineSupported() ? offline() : Promise.reject(err)));
     if (run !== nearRun || !nearPos) return;
     nearLast = { ...r, at: Date.now() };
     renderNear(false);
@@ -619,13 +724,14 @@ function renderNearChips() {
   box.innerHTML = "";
   for (const r of nearLines) {
     const isOn = nearLine && nearLine.mode === r.mode && nearLine.shortName === r.shortName;
-    const chip = makeBadge(r.shortName, r.mode, "chip-badge");
+    const chip = makeBadge(r.shortName, r.mode, "chip-badge", r.operator, r.where);
     chip.setAttribute("role", "button");
     chip.tabIndex = 0;
     if (nearLine) chip.classList.add(isOn ? "on" : "faded");
     chip.addEventListener("click", () => chooseNearLine(isOn ? null : r));
     box.appendChild(chip);
   }
+  limitChips(box, "near", renderNearChips);
 }
 
 function chooseNearLine(r) {
@@ -639,8 +745,13 @@ function chooseNearLine(r) {
 /** Lines serving the nearby stops, from their routes and departures, sorted by number. */
 function collectNearLines(patterns) {
   const seen = new Map();
-  for (const p of patterns) seen.set(`${p.mode}|${p.line}`, { mode: p.mode, shortName: p.line });
-  for (const d of nearLast?.departures || []) seen.set(`${d.mode}|${d.line}`, { mode: d.mode, shortName: d.line });
+  for (const p of patterns) {
+    seen.set(`${p.mode}|${p.line}`, { mode: p.mode, shortName: p.line, operator: p.operator, where: p.stops?.[0] || null });
+  }
+  for (const d of nearLast?.departures || []) {
+    const k = `${d.mode}|${d.line}`;
+    if (!seen.has(k)) seen.set(k, { mode: d.mode, shortName: d.line, operator: d.operator, where: d.stop });
+  }
   return [...seen.values()].sort((a, b) => String(a.shortName).localeCompare(String(b.shortName), "et", { numeric: true }));
 }
 
@@ -656,6 +767,7 @@ function openNear() {
   nearLast = null;
   nearLine = null;
   nearLines = [];
+  chipsOpen.near = false;
   $("near-lines").innerHTML = "";
   $("near-note").textContent = pos.live ? "" : "Using your last known position.";
   $("near-departures").innerHTML = `<li class="muted">Loading…</li>`;
@@ -669,7 +781,9 @@ function openNear() {
     setNearStops(nearLast.stops); // map: only the stops within 200 m
     if (!nearLast.stops.length) return;
     try {
-      const patterns = await getStopsPatterns(nearLast.stops.map((s) => s.gtfsId));
+      const patterns = nearLast.offline
+        ? await offlinePatterns(nearLast.stops)
+        : await getStopsPatterns(nearLast.stops.map((s) => s.gtfsId));
       if (session !== nearSession) return;
       showNearRoutes(patterns);
       nearLines = collectNearLines(patterns);
@@ -699,8 +813,6 @@ $("near-close").addEventListener("click", () => closeNear());
 
 // ---------- A route opened from the Routes tab ----------
 
-const ROUTE_COLOR = "#e6194b";
-
 function hideRouteBar() {
   if ($("route-bar").hidden) return;
   $("route-bar").hidden = true;
@@ -714,9 +826,8 @@ initRoutes({
     switchTab("map");
     showRoute(route, direction);
     const b = $("route-bar-badge");
-    const nb = makeBadge(route.line, route.mode);
+    const nb = makeBadge(route.line, route.mode, "", route.operator, direction.stops?.[0] || null);
     nb.id = "route-bar-badge";
-    nb.style.background = ROUTE_COLOR; // same colour as the drawn route and its buses
     b.replaceWith(nb);
     $("route-bar-text").textContent = `→ ${direction.headsign}`;
     $("route-bar").hidden = false;
@@ -748,11 +859,13 @@ function updateOnlineState() {
   const offline = !navigator.onLine;
   showOfflineNote(offline);
   if (!offline) {
-    // Back online: reload what's on screen.
-    if (currentStop) refreshDepartures();
-    if (nearPos) refreshNear();
-    if (activeTab === "map" || activeTab === "plan") showMap();
+    forgetOfflineStops();
+    prefetchOffline(getMyPosition()).catch(() => {});
   }
+  // Reload what's on screen: live data when back online, the offline timetable when not.
+  if (currentStop) refreshDepartures();
+  if (nearPos) refreshNear();
+  if (activeTab === "map" || activeTab === "plan") showMap();
 }
 window.addEventListener("online", updateOnlineState);
 window.addEventListener("offline", updateOnlineState);
@@ -761,6 +874,9 @@ showOfflineNote(!navigator.onLine);
 // ---------- Start ----------
 
 switchTab("map");
+
+// Keep the offline timetable on the phone (at most once a day, after start-up).
+setTimeout(() => prefetchOffline(getMyPosition()).catch(() => {}), 8000);
 
 // Installable app + opening without internet (see sw.js).
 if ("serviceWorker" in navigator) {

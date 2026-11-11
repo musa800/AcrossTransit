@@ -2,7 +2,8 @@
 // first and open, others load when expanded), search, and a route's details
 // (directions and stops) with "Show on map".
 
-import { getAgencies, getAgencyRoutes, searchRoutes, getRouteDirections, isTlt } from "./peatus.js?v=38";
+import { getAgencies, getAgencyRoutes, searchRoutes, getRouteDirections, isTlt } from "./peatus.js?v=39";
+import { lineColor } from "./colors.js?v=39";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const TYPE_ORDER = ["TRAM", "TROLLEYBUS", "BUS", "RAIL", "FERRY"];
@@ -25,8 +26,9 @@ function el(tag, cls, text) {
   return e;
 }
 
-function badge(r) {
+function badge(r, where = null) {
   const b = el("span", `badge ${MODES.includes(r.mode) ? r.mode : "OTHER"} small-badge`, r.line || "–");
+  b.style.background = lineColor(r.mode, r.line, r.operator || "", where);
   return b;
 }
 
@@ -233,6 +235,8 @@ async function openDetail(r) {
     dirBox.appendChild(btn);
   }
   showDir(current);
+  // Now a stop of the route is known (tells Tartu city lines apart).
+  $("route-detail-badge").replaceWith(Object.assign(badge(r, current.stops[0] || null), { id: "route-detail-badge" }));
   const show = $("route-show-map");
   show.hidden = false;
   show.onclick = () => hooks.onShowOnMap(r, current);

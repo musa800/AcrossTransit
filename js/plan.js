@@ -1,15 +1,15 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, planMany, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=38";
-import { searchPlaces } from "./geocode.js?v=38";
+import { searchStops, planTrip, planMany, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=39";
+import { searchPlaces } from "./geocode.js?v=39";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=38";
-import { lineKey } from "./vehicles.js?v=38";
-import { findBetterTransfers } from "./connect.js?v=38";
-import { planOffline, offlineSupported } from "./offline.js?v=38";
+} from "./map.js?v=39";
+import { lineKey } from "./vehicles.js?v=39";
+import { findBetterTransfers } from "./connect.js?v=39";
+import { planOffline, offlineSupported } from "./offline.js?v=39";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -283,9 +283,30 @@ function plannerSource() {
   return offlineSupported() ? "both" : "online";
 }
 
+/** Walks that follow each other (e.g. to a stop, then a transfer walk) as one walk. */
+function joinWalks(trip) {
+  const legs = [];
+  for (const l of trip.legs) {
+    const prev = legs[legs.length - 1];
+    if (prev && !prev.transit && !l.transit) {
+      legs[legs.length - 1] = {
+        ...prev,
+        to: l.to,
+        end: l.end,
+        duration: prev.duration + l.duration,
+        distance: prev.distance + l.distance,
+        points: [...prev.points, ...l.points],
+      };
+    } else {
+      legs.push(l);
+    }
+  }
+  return legs.length === trip.legs.length ? trip : { ...trip, legs };
+}
+
 /** Online and offline trips in one list, sorted; each marked with where it came from. */
 function combineSources(online, offline, arriveBy) {
-  const list = [...online.map((t) => ({ ...t, source: t.source || "online" })), ...offline];
+  const list = [...online.map((t) => ({ ...t, source: t.source || "online" })), ...offline].map(joinWalks);
   return sortTrips(list, arriveBy).slice(0, MAX_TRIPS + (offline.length ? 5 : 0));
 }
 

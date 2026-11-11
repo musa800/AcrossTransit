@@ -624,3 +624,16 @@ p { margin: 4px 0; }
   color: var(--muted);
 }
 .source-tag.offline { border-color: var(--accent); color: var(--accent-text); }
+
+/* "+N" chip: the rest of a busy stop's lines */
+.chip-more {
+  padding: 2px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.day-btn:disabled { opacity: 0.35; cursor: default; }
