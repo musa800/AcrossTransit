@@ -1,14 +1,14 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=32";
-import { searchPlaces } from "./geocode.js?v=32";
+import { searchStops, planTrip, planMany, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=33";
+import { searchPlaces } from "./geocode.js?v=33";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=32";
-import { lineKey } from "./vehicles.js?v=32";
-import { findTightConnections } from "./connect.js?v=32";
+} from "./map.js?v=33";
+import { lineKey } from "./vehicles.js?v=33";
+import { findBetterTransfers } from "./connect.js?v=33";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -490,15 +490,40 @@ async function planCityOnly(when, arriveBy) {
 }
 
 /** Extra tight trips found by the app itself (never fails the plan). */
+/** Several planner questions at once ("from this stop, at this time"), with the same settings as the tight search. */
+async function planFromStops(requests) {
+  const opts = { walkSpeed: WALK_SPEED, ...TIGHT_OPTS };
+  if (cityOnly() && bannedSupported) {
+    try {
+      opts.bannedAgencies = (await getNonTltAgencyIds()).join(",");
+    } catch {
+      /* filtered afterwards instead */
+    }
+  }
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const use = Object.fromEntries(Object.entries(opts).filter(([k]) => !unsupported.has(k)));
+    try {
+      return await planMany(requests, use);
+    } catch (err) {
+      const bad = ["walkSpeed", "minTransferTime", "boardSlack", "alightSlack"].find((k) => k in use && isUnknownArg(err, k));
+      if (!bad) throw err;
+      unsupported.add(bad);
+    }
+  }
+  return planMany(requests, {});
+}
+
+/** Extra trips found by the app itself: getting off earlier for a faster transfer (never fails the plan). */
 async function ownTightCheck(trips, when, arriveBy) {
-  const t = Math.floor(when.getTime() / 1000);
-  const limits = arriveBy ? { earliestStart: null, latestEnd: t } : { earliestStart: t - 60, latestEnd: null };
+  if (arriveBy) return []; // the stop-by-stop questions are "depart at" questions
   try {
     const stats = {};
     if (diag) diag.ownStats = stats;
-    let extra = await findTightConnections(trips, limits, stats);
-    if (cityOnly()) extra = extra.filter(tltOnly);
-    return extra;
+    return await findBetterTransfers(
+      trips,
+      { to: ends.to, planFrom: planFromStops, keep: (it) => !cityOnly() || tltOnly(it) },
+      stats
+    );
   } catch (err) {
     if (diag) diag.ownError = err.message.slice(0, 160);
     return [];
@@ -548,8 +573,8 @@ async function runPlan() {
     // Then the app's own check for tight connections the planner won't offer.
     if (diag) diag.ownRunning = true;
     refreshSearchDetails();
-    // It uses every trip found, not just the 8 shown.
-    const extra = await ownTightCheck(allTrips, when, arriveBy);
+    // It looks at the first rides of the earliest trips.
+    const extra = await ownTightCheck(result, when, arriveBy);
     if (run !== planRun) return;
     if (diag) diag.ownRunning = false;
     if (extra.length) {
@@ -642,11 +667,8 @@ function searchDetails() {
     parts.push(diag.ownRunning ? "own check running…" : `own check +${diag.own}`);
   }
   const st = diag?.ownStats;
-  if (st && st.checked != null) {
-    let o = `own check looked at ${st.checked} transfer${st.checked === 1 ? "" : "s"}, ${st.runs1}+${st.runs2} runs`;
-    if (st.walk != null) o += `, walk ${st.walk}s (planner ${st.plannerWalk}s)`;
-    if (st.closest != null) o += `, closest spare ${st.closest}s`;
-    parts.push(o);
+  if (st && st.rides != null) {
+    parts.push(`own check: ${st.rides} ride${st.rides === 1 ? "" : "s"}, ${st.asked} stops asked, ${st.better} faster`);
   }
   let text = "Search: " + parts.join(" · ");
   if (diag?.tightError) text += ` · tight search error: ${diag.tightError}`;

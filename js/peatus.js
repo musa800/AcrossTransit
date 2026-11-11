@@ -1,7 +1,7 @@
 // Data: Peatus.ee OpenTripPlanner GraphQL API (stops, departures, routes).
 // No screen code here, so this file can be reused in other apps.
 
-import { fetchChecked } from "./net.js?v=32";
+import { fetchChecked } from "./net.js?v=33";
 
 const API = "https://api.peatus.ee/routing/v1/routers/estonia/index/graphql";
 
@@ -253,61 +253,23 @@ export function decodePolyline(str) {
  *   { transit, mode, line, headsign, operator, start, end, distance, duration,
  *     from: {name, lat, lon}, to: {name, lat, lon}, stops, points }
  */
-export async function planTrip(from, to, when, arriveBy = false, options = {}) {
-  const { bannedAgencies = null, count = 5 } = options;
-  // Optional settings are only added to the query when used, so a server
-  // that doesn't know one of them only fails the search that asked for it.
-  const extraVars = [];
-  const extraArgs = [];
-  const extraValues = {};
-  if (bannedAgencies) {
-    extraVars.push("$banned: String!");
-    extraArgs.push("banned: { agencies: $banned }");
-    extraValues.banned = bannedAgencies;
-  }
-  // Optional numeric settings, each added only when given.
-  const OPTIONAL = { walkSpeed: "Float", minTransferTime: "Int", boardSlack: "Int", alightSlack: "Int" };
-  for (const [name, type] of Object.entries(OPTIONAL)) {
-    if (options[name] == null) continue;
-    extraVars.push(`$${name}: ${type}!`);
-    extraArgs.push(`${name}: $${name}`);
-    extraValues[name] = options[name];
-  }
-  const varsDecl = extraVars.length ? ", " + extraVars.join(", ") : "";
-  const argsUse = extraArgs.length ? ", " + extraArgs.join(", ") : "";
-  const pad = (n) => String(n).padStart(2, "0");
-  const date = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
-  const time = `${pad(when.getHours())}:${pad(when.getMinutes())}:00`;
-  const data = await gql(
-    `query ($from: InputCoordinates!, $to: InputCoordinates!, $date: String!, $time: String!,
-            $arriveBy: Boolean!, $count: Int!${varsDecl}) {
-       plan(from: $from, to: $to, date: $date, time: $time, arriveBy: $arriveBy,
-            numItineraries: $count${argsUse}) {
-         itineraries {
-           startTime endTime duration walkDistance
-           legs {
-             mode startTime endTime distance duration
-             route { gtfsId shortName mode agency { name } }
-             trip { tripHeadsign }
-             from { name lat lon stop { gtfsId } }
-             to { name lat lon stop { gtfsId } }
-             intermediateStops { gtfsId name lat lon }
-             legGeometry { points }
-           }
-         }
-       }
-     }`,
-    {
-      from: { lat: from.lat, lon: from.lon },
-      to: { lat: to.lat, lon: to.lon },
-      date,
-      time,
-      arriveBy,
-      count,
-      ...extraValues,
+// The fields asked for each trip (shared by planTrip and planMany).
+const ITINERARY_FIELDS = `
+  itineraries {
+    startTime endTime duration walkDistance
+    legs {
+      mode startTime endTime distance duration
+      route { gtfsId shortName mode agency { name } }
+      trip { gtfsId tripHeadsign }
+      from { name lat lon stop { gtfsId } }
+      to { name lat lon stop { gtfsId } }
+      intermediateStops { gtfsId name lat lon }
+      legGeometry { points }
     }
-  );
-  return (data.plan?.itineraries || []).map((it) => ({
+  }`;
+
+function mapItineraries(plan) {
+  return (plan?.itineraries || []).map((it) => ({
     start: Math.round(it.startTime / 1000),
     end: Math.round(it.endTime / 1000),
     duration: it.duration,
@@ -319,6 +281,7 @@ export async function planTrip(from, to, when, arriveBy = false, options = {}) {
       headsign: l.trip?.tripHeadsign || "",
       operator: l.route?.agency?.name || "",
       routeId: l.route?.gtfsId || "",
+      tripId: l.trip?.gtfsId || "",
       fromStop: l.from?.stop?.gtfsId || "",
       toStop: l.to?.stop?.gtfsId || "",
       start: Math.round(l.startTime / 1000),
@@ -332,6 +295,80 @@ export async function planTrip(from, to, when, arriveBy = false, options = {}) {
       points: decodePolyline(l.legGeometry?.points || ""),
     })),
   }));
+}
+
+function dateTimeParts(when) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return {
+    date: `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`,
+    time: `${pad(when.getHours())}:${pad(when.getMinutes())}:${pad(when.getSeconds())}`,
+  };
+}
+
+// Optional numeric settings, each added only when given.
+const OPTIONAL = { walkSpeed: "Float", minTransferTime: "Int", boardSlack: "Int", alightSlack: "Int" };
+
+export async function planTrip(from, to, when, arriveBy = false, options = {}) {
+  const { bannedAgencies = null, count = 5 } = options;
+  // Optional settings are only added to the query when used, so a server
+  // that doesn't know one of them only fails the search that asked for it.
+  const extraVars = [];
+  const extraArgs = [];
+  const extraValues = {};
+  if (bannedAgencies) {
+    extraVars.push("$banned: String!");
+    extraArgs.push("banned: { agencies: $banned }");
+    extraValues.banned = bannedAgencies;
+  }
+  for (const [name, type] of Object.entries(OPTIONAL)) {
+    if (options[name] == null) continue;
+    extraVars.push(`$${name}: ${type}!`);
+    extraArgs.push(`${name}: $${name}`);
+    extraValues[name] = options[name];
+  }
+  const varsDecl = extraVars.length ? ", " + extraVars.join(", ") : "";
+  const argsUse = extraArgs.length ? ", " + extraArgs.join(", ") : "";
+  const { date, time } = dateTimeParts(when);
+  const data = await gql(
+    `query ($from: InputCoordinates!, $to: InputCoordinates!, $date: String!, $time: String!,
+            $arriveBy: Boolean!, $count: Int!${varsDecl}) {
+       plan(from: $from, to: $to, date: $date, time: $time, arriveBy: $arriveBy,
+            numItineraries: $count${argsUse}) { ${ITINERARY_FIELDS} }
+     }`,
+    {
+      from: { lat: from.lat, lon: from.lon },
+      to: { lat: to.lat, lon: to.lon },
+      date,
+      time,
+      arriveBy,
+      count,
+      ...extraValues,
+    }
+  );
+  return mapItineraries(data.plan);
+}
+
+/**
+ * Several "depart at" plans in one request.
+ * requests: [{ from: {lat, lon}, to: {lat, lon}, when: Date }]; options as planTrip.
+ * Returns the trips of each request.
+ */
+export async function planMany(requests, options = {}) {
+  if (!requests.length) return [];
+  const { bannedAgencies = null, count = 3 } = options;
+  const extra = [];
+  if (bannedAgencies) extra.push(`banned: { agencies: ${JSON.stringify(bannedAgencies)} }`);
+  for (const name of Object.keys(OPTIONAL)) {
+    if (options[name] != null) extra.push(`${name}: ${Number(options[name])}`);
+  }
+  const extraArgs = extra.length ? ", " + extra.join(", ") : "";
+  const parts = requests.map((r, i) => {
+    const { date, time } = dateTimeParts(r.when);
+    return `p${i}: plan(from: { lat: ${r.from.lat}, lon: ${r.from.lon} }, to: { lat: ${r.to.lat}, lon: ${r.to.lon} },
+              date: "${date}", time: "${time}", arriveBy: false, numItineraries: ${count}${extraArgs}) { ${ITINERARY_FIELDS} }`;
+  });
+  const data = await gql(`{ ${parts.join("\n")} }`);
+  return requests.map((_, i) => mapItineraries(data[`p${i}`]));
 }
 
 // ---------- Near me ----------
