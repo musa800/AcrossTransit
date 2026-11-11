@@ -9,11 +9,11 @@ gzipped files into the website's data/ folder:
   data/report.json        what was built, from which sources, any problems
   data/stops.json.gz      every stop used by the kept lines
   data/day-YYYYMMDD.json.gz  one timetable per day (today + 7 days)
-  data/walk.json.gz       the walking network (Harju county incl. Tallinn)
+  data/walk-<area>.json.gz  the walking network per area (harju, tartu)
   data/transfers.json.gz  real walking distances between nearby stops
 
 Kept lines: Tallinna Linnatransport (Tallinn city), all Harju county lines,
-and Elron trains (whole network).
+Tartu city and Tartu county lines, and Elron trains (whole network).
 
 Usage:
   python3 tools/build_data.py --out _site/data
@@ -39,13 +39,19 @@ FEEDS = [
     # (name, url, which agencies to keep: None = all, or a lowercase substring)
     ("tallinn", "https://eu-gtfs.remix.com/tallinn.zip", None),
     ("harjumaa", "https://eu-gtfs.remix.com/harjumaa.zip", None),
+    ("tartu", "https://eu-gtfs.remix.com/tartu.zip", None),       # Tartu city (name not confirmed)
+    ("tartumaa", "https://eu-gtfs.remix.com/tartumaa.zip", None),
     # Elron trains: taken from the all-Estonia file if it's available.
     ("estonia", "https://eu-gtfs.remix.com/estonia_unified_gtfs.zip", "elron"),
 ]
 OSM_URL = "https://download.geofabrik.de/europe/estonia-latest.osm.pbf"
 
-# Walking network area: Harju county (incl. Tallinn) with a small margin.
-BBOX = (58.95, 23.30, 59.80, 26.05)  # min lat, min lon, max lat, max lon
+# Walking network areas, each its own file (the phone downloads only what it needs).
+# (name, (min lat, min lon, max lat, max lon)) with a small margin.
+REGIONS = [
+    ("harju", (58.95, 23.30, 59.80, 26.05)),   # Harju county incl. Tallinn
+    ("tartu", (58.05, 26.05, 58.80, 27.60)),   # Tartu county incl. Tartu
+]
 
 DAYS = 8                 # today + 7 days
 TRANSFER_RADIUS_M = 700  # stop-to-stop walks are worked out up to this distance
@@ -306,15 +312,18 @@ def build_days(tt, stop_index, start, out_dir):
 # ---------------------------------------------------------------- walking network
 
 
-def build_walk(osm_path, stops, out_dir):
-    import osmium  # installed in the workflow
+def in_box(box, lat, lon):
+    return box[0] <= lat <= box[2] and box[1] <= lon <= box[3]
 
-    lat0, lon0, lat1, lon1 = BBOX
+
+def read_ways(osm_path):
+    """Walkable ways per region, from one pass over the OpenStreetMap file."""
+    import osmium  # installed in the workflow
 
     class Ways(osmium.SimpleHandler):
         def __init__(self):
             super().__init__()
-            self.ways = []  # list of node-coordinate lists
+            self.ways = {name: [] for name, _ in REGIONS}
 
         def way(self, w):
             tags = w.tags
@@ -331,23 +340,27 @@ def build_walk(osm_path, stops, out_dir):
                 if not n.location.valid():
                     return
                 pts.append((n.ref, n.location.lat, n.location.lon))
-            if not any(lat0 <= p[1] <= lat1 and lon0 <= p[2] <= lon1 for p in pts):
-                return
-            self.ways.append(pts)
-            # Parking lots: also walk straight across, between opposite corners.
-            if parking and len(pts) >= 4 and pts[0][0] == pts[-1][0]:
-                ring = pts[:-1]
-                half = len(ring) // 2
-                for i in range(half):
-                    self.ways.append([ring[i], ring[i + half]])
+            for name, box in REGIONS:
+                if not any(in_box(box, p[1], p[2]) for p in pts):
+                    continue
+                self.ways[name].append(pts)
+                # Parking lots: also walk straight across, between opposite corners.
+                if parking and len(pts) >= 4 and pts[0][0] == pts[-1][0]:
+                    ring = pts[:-1]
+                    half = len(ring) // 2
+                    for i in range(half):
+                        self.ways[name].append([ring[i], ring[i + half]])
 
     h = Ways()
     h.apply_file(osm_path, locations=True, idx="flex_mem")
-    log(f"walkable ways: {len(h.ways)}")
+    return h.ways
 
-    # Count node use to find intersections; keep only those (plus way ends) as graph nodes.
+
+def build_region(name, ways, stops, stop_ids, members, transfers, out_dir):
+    """Walking network of one area, and stop-to-stop walks for the stops in it (members)."""
+    log(f"[{name}] walkable ways: {len(ways)}")
     use = defaultdict(int)
-    for pts in h.ways:
+    for pts in ways:
         for i, p in enumerate(pts):
             use[p[0]] += 2 if i in (0, len(pts) - 1) else 1
     node_id, coords = {}, []
@@ -360,7 +373,7 @@ def build_walk(osm_path, stops, out_dir):
         return i
 
     edges = {}  # (a, b) -> (length m, geometry [(lat, lon)...] between a and b)
-    for pts in h.ways:
+    for pts in ways:
         start = 0
         for i in range(1, len(pts)):
             if i == len(pts) - 1 or use[pts[i][0]] > 1:
@@ -375,14 +388,13 @@ def build_walk(osm_path, stops, out_dir):
                     if key not in edges or edges[key][0] > length:
                         edges[key] = (length, mid)
                 start = i
-    log(f"walking network: {len(coords)} nodes, {len(edges)} links")
+    log(f"[{name}] walking network: {len(coords)} nodes, {len(edges)} links")
 
     adj = [[] for _ in coords]
     for (a, b), (length, _) in edges.items():
         adj[a].append((b, length))
         adj[b].append((a, length))
 
-    # Spatial grid for snapping.
     cell = 0.002
     grid = defaultdict(list)
     for i, (la, lo) in enumerate(coords):
@@ -401,56 +413,40 @@ def build_walk(osm_path, stops, out_dir):
         out.sort()
         return out[:SNAP_NODES]
 
-    # Stop-to-stop walks: from each stop, walk the network up to TRANSFER_RADIUS_M.
-    stop_ids = list(stops)
-    snaps = []
+    snaps = {}
     node_stops = defaultdict(list)  # node -> [(stop index, distance)]
-    for si, sid in enumerate(stop_ids):
-        s = stops[sid]
+    for si in members:
+        s = stops[stop_ids[si]]
         sn = near_nodes(s["lat"], s["lon"], SNAP_RADIUS_M)
-        snaps.append(sn)
+        snaps[si] = sn
         for dd, n in sn:
             node_stops[n].append((si, dd))
-    transfers = []
-    for si, sid in enumerate(stop_ids):
-        s = stops[sid]
+    unsnapped = []
+    for si in members:
+        if not snaps[si]:
+            unsnapped.append(si)
+            continue
         best = {}
-        if snaps[si]:
-            dist = {}
-            heap = []
-            for dd, n in snaps[si]:
-                if dd < dist.get(n, 1e18):
-                    dist[n] = dd
-                    heapq.heappush(heap, (dd, n))
-            while heap:
-                d, n = heapq.heappop(heap)
-                if d > dist.get(n, 1e18) or d > TRANSFER_RADIUS_M:
-                    continue
-                for sj, dd in node_stops.get(n, ()):
-                    total = d + dd
-                    if sj != si and total <= TRANSFER_RADIUS_M and total < best.get(sj, 1e18):
-                        best[sj] = total
-                for m, length in adj[n]:
-                    nd = d + length
-                    if nd < dist.get(m, 1e18) and nd <= TRANSFER_RADIUS_M:
-                        dist[m] = nd
-                        heapq.heappush(heap, (nd, m))
-        transfers.append(sorted([sj, round(m)] for sj, m in best.items()))
-
-    # Stops with no network nearby (outside the map area): straight line + 30%.
-    unsnapped = [si for si in range(len(stop_ids)) if not snaps[si]]
-    for si in unsnapped:
-        a = stops[stop_ids[si]]
-        for sj in range(len(stop_ids)):
-            if sj == si:
+        dist = {}
+        heap = []
+        for dd, n in snaps[si]:
+            if dd < dist.get(n, 1e18):
+                dist[n] = dd
+                heapq.heappush(heap, (dd, n))
+        while heap:
+            d, n = heapq.heappop(heap)
+            if d > dist.get(n, 1e18) or d > TRANSFER_RADIUS_M:
                 continue
-            b = stops[stop_ids[sj]]
-            if abs(a["lat"] - b["lat"]) > 0.01:
-                continue
-            m = metres(a["lat"], a["lon"], b["lat"], b["lon"]) * FALLBACK_DETOUR
-            if m <= TRANSFER_RADIUS_M:
-                transfers[si].append([sj, round(m)])
-    report["counts"]["stops_off_network"] = len(unsnapped)
+            for sj, dd in node_stops.get(n, ()):
+                total = d + dd
+                if sj != si and total <= TRANSFER_RADIUS_M and total < best.get(sj, 1e18):
+                    best[sj] = total
+            for m, length in adj[n]:
+                nd = d + length
+                if nd < dist.get(m, 1e18) and nd <= TRANSFER_RADIUS_M:
+                    dist[m] = nd
+                    heapq.heappush(heap, (nd, m))
+        transfers[si] = sorted([sj, round(m)] for sj, m in best.items())
 
     # Compact walking network: coordinates as 1e-5 degree integers, delta-encoded.
     flat_lat, flat_lon = [], []
@@ -472,15 +468,53 @@ def build_walk(osm_path, stops, out_dir):
             g += [x - pa, y - pb]
             pa, pb = x, y
         e_geom.append(g)
-    size_walk = write_gz(
-        os.path.join(out_dir, "walk.json.gz"),
-        {"lat": flat_lat, "lon": flat_lon, "from": e_from, "to": e_to, "len_dm": e_len, "geom": e_geom},
+    box = dict(REGIONS)[name]
+    fname = f"walk-{name}.json.gz"
+    size = write_gz(
+        os.path.join(out_dir, fname),
+        {"area": name, "bbox": box, "lat": flat_lat, "lon": flat_lon,
+         "from": e_from, "to": e_to, "len_dm": e_len, "geom": e_geom},
     )
+    report["files"][fname] = size
+    report["counts"][f"walk_{name}"] = {"nodes": len(coords), "links": len(edges), "stops": len(members), "stops_unsnapped": len(unsnapped)}
+    log(f"[{name}] {fname} {size // 1024} KB")
+    return unsnapped
+
+
+def build_walk(osm_path, stops, out_dir):
+    stop_ids = list(stops)
+    ways = read_ways(osm_path)
+    transfers = [[] for _ in stop_ids]
+    leftover = []
+    assigned = set()
+    for name, box in REGIONS:
+        members = [si for si, sid in enumerate(stop_ids)
+                   if si not in assigned and in_box(box, stops[sid]["lat"], stops[sid]["lon"])]
+        assigned.update(members)
+        leftover += build_region(name, ways[name], stops, stop_ids, members, transfers, out_dir)
+    leftover += [si for si in range(len(stop_ids)) if si not in assigned]
+
+    # Stops with no walking network (outside the areas): straight line + 30%.
+    by_lat = sorted(range(len(stop_ids)), key=lambda i: stops[stop_ids[i]]["lat"])
+    for si in leftover:
+        a = stops[stop_ids[si]]
+        for sj in by_lat:
+            b = stops[stop_ids[sj]]
+            if sj == si or abs(a["lat"] - b["lat"]) > 0.01:
+                continue
+            m = metres(a["lat"], a["lon"], b["lat"], b["lon"]) * FALLBACK_DETOUR
+            if m <= TRANSFER_RADIUS_M:
+                transfers[si].append([sj, round(m)])
+                transfers[sj].append([si, round(m)])
+    for lst in transfers:
+        lst.sort()
+    # Remove duplicates added in both directions.
+    transfers = [[x for k, x in enumerate(lst) if k == 0 or x[0] != lst[k - 1][0]] for lst in transfers]
+    report["counts"]["stops_off_network"] = len(leftover)
     size_tr = write_gz(os.path.join(out_dir, "transfers.json.gz"), {"stops": len(stop_ids), "walks_m": transfers})
-    report["counts"].update({"walk_nodes": len(coords), "walk_links": len(edges)})
-    report["files"]["walk.json.gz"] = size_walk
     report["files"]["transfers.json.gz"] = size_tr
-    log(f"walk.json.gz {size_walk // 1024} KB, transfers.json.gz {size_tr // 1024} KB")
+    report["regions"] = [{"name": n, "bbox": b, "file": f"walk-{n}.json.gz"} for n, b in REGIONS]
+    log(f"transfers.json.gz {size_tr // 1024} KB")
 
 
 # ---------------------------------------------------------------- main
