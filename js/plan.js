@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=26";
-import { searchPlaces } from "./geocode.js?v=26";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=27";
+import { searchPlaces } from "./geocode.js?v=27";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=26";
-import { lineKey } from "./vehicles.js?v=26";
+} from "./map.js?v=27";
+import { lineKey } from "./vehicles.js?v=27";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -306,7 +306,8 @@ function leavesTallinn() {
 // one with the planner's normal transfer margin, one with no margin. Trips
 // only the second one finds have a tight transfer and are labelled so.
 
-const WALK_SPEED = 5 / 3.6;  // 5 km/h in m/s
+const WALK_SPEED = 5 / 3.6;        // 5 km/h in m/s: normal searches
+const TIGHT_WALK_SPEED = 6 / 3.6;  // 6 km/h: the no-margin search assumes a brisk walk
 const MAX_TRIPS = 8;         // cap on the merged list
 const NORMAL_MARGIN_S = 120; // the planner's usual transfer margin (for labelling)
 
@@ -324,7 +325,7 @@ function resetDiag() {
 
 /** One search. Settings the server rejects are dropped and the search is retried. */
 async function searchOnce(when, arriveBy, opts) {
-  const wanted = { ...opts, walkSpeed: WALK_SPEED };
+  const wanted = { walkSpeed: WALK_SPEED, ...opts };
   for (let attempt = 0; attempt < 5; attempt++) {
     const use = Object.fromEntries(Object.entries(wanted).filter(([k]) => !unsupported.has(k)));
     try {
@@ -340,10 +341,10 @@ async function searchOnce(when, arriveBy, opts) {
   return planTrip(ends.from, ends.to, when, arriveBy, opts);
 }
 
-const TIGHT_OPTS = { minTransferTime: 0, boardSlack: 0, alightSlack: 0 };
+const TIGHT_OPTS = { minTransferTime: 0, boardSlack: 0, alightSlack: 0, walkSpeed: TIGHT_WALK_SPEED };
 
 function tightPossible() {
-  return Object.keys(TIGHT_OPTS).some((k) => !unsupported.has(k));
+  return Object.keys(TIGHT_OPTS).some((k) => k !== "walkSpeed" && !unsupported.has(k));
 }
 
 /** Same lines, boarding at the same stops, at the same times = the same trip. */
@@ -572,7 +573,7 @@ function searchDetails() {
   const ok = (k) => (unsupported.has(k) ? "✗" : "✓");
   const parts = [
     `5 km/h ${ok("walkSpeed")}`,
-    `no margin ${ok("minTransferTime")}`,
+    `tight: 6 km/h, no margin ${ok("minTransferTime")}`,
     `board/alight slack ${ok("boardSlack")}${ok("alightSlack")}`,
   ];
   if (diag) parts.push(`normal ${diag.normal} · tight ${diag.tight} · new ${diag.added}`);
