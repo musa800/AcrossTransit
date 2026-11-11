@@ -1,13 +1,14 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=30";
-import { searchPlaces } from "./geocode.js?v=30";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=31";
+import { searchPlaces } from "./geocode.js?v=31";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=30";
-import { lineKey } from "./vehicles.js?v=30";
+} from "./map.js?v=31";
+import { lineKey } from "./vehicles.js?v=31";
+import { findTightConnections } from "./connect.js?v=31";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
