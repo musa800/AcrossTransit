@@ -4,20 +4,20 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule, getNearbyDepartures, getStopsPatterns,
-} from "./peatus.js?v=40";
+} from "./peatus.js?v=41";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, setMode, forgetOfflineStops,
   initLocation, getMyPosition, getLocationError, showRoute, clearRoute,
   showNearRoutes, setNearFilter, clearNearRoutes, setNearStops,
-} from "./map.js?v=40";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=40";
-import { initRoutes, enterRoutes } from "./routes.js?v=40";
-import { lineColor } from "./colors.js?v=40";
+} from "./map.js?v=41";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=41";
+import { initRoutes, enterRoutes } from "./routes.js?v=41";
+import { lineColor } from "./colors.js?v=41";
 import {
   offlineSupported, isOfflineStop, offlineStopDepartures, offlinePatterns, offlineNearby,
   offlineSchedule, offlineDays, offlineStopsInBox, prefetchOffline,
-} from "./offline.js?v=40";
+} from "./offline.js?v=41";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -860,7 +860,7 @@ function updateOnlineState() {
   showOfflineNote(offline);
   if (!offline) {
     forgetOfflineStops();
-    prefetchOffline(getMyPosition()).catch(() => {});
+    prefetchWithBar();
   }
   // Reload what's on screen: live data when back online, the offline timetable when not.
   if (currentStop) refreshDepartures();
@@ -876,7 +876,23 @@ showOfflineNote(!navigator.onLine);
 switchTab("map");
 
 // Keep the offline timetable on the phone (at most once a day, after start-up).
-setTimeout(() => prefetchOffline(getMyPosition()).catch(() => {}), 8000);
+// A thin progress bar on the Map tab while it downloads.
+function prefetchWithBar() {
+  const bar = $("prep-bar");
+  let showTimer = null;
+  prefetchOffline(
+    getMyPosition(),
+    () => (showTimer = setTimeout(() => (bar.hidden = false), 300)), // no flash if it's quick
+    (f) => ($("prep-fill").style.width = `${Math.round(f * 100)}%`)
+  )
+    .catch(() => {})
+    .finally(() => {
+      clearTimeout(showTimer);
+      $("prep-fill").style.width = "100%";
+      setTimeout(() => (bar.hidden = true), bar.hidden ? 0 : 600);
+    });
+}
+setTimeout(prefetchWithBar, 3000);
 
 // Installable app + opening without internet (see sw.js).
 if ("serviceWorker" in navigator) {

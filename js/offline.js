@@ -11,7 +11,7 @@
 // OpenStreetMap at 5 km/h, with no transfer margin; transfers with less than
 // two minutes to spare are labelled tight.
 
-import { decodePolyline } from "./peatus.js?v=40";
+import { decodePolyline } from "./peatus.js?v=41";
 
 const BASE = "data/";
 const CACHE = "acrosstransit-data-v1";
@@ -1024,7 +1024,18 @@ export async function offlineSchedule(stop, mode, line, date) {
  * of the area you're in. Runs at most once a day; files still fresh are skipped.
  */
 const PREFETCH_KEY = "acrosstransit.offlinePrefetch";
-export async function prefetchOffline(pos) {
+let prefetching = null;
+
+/**
+ * onStart() is called if a download actually begins; onProgress(fraction 0–1)
+ * as files arrive. Resolves when done (or right away if not needed today).
+ */
+export function prefetchOffline(pos, onStart = () => {}, onProgress = () => {}) {
+  if (!prefetching) prefetching = runPrefetch(pos, onStart, onProgress).finally(() => (prefetching = null));
+  return prefetching;
+}
+
+async function runPrefetch(pos, onStart, onProgress) {
   if (!offlineSupported() || !navigator.onLine) return;
   const today = ymdOf(new Date());
   try {
@@ -1032,14 +1043,22 @@ export async function prefetchOffline(pos) {
   } catch {
     /* fine: just fetch */
   }
+  onStart();
+  onProgress(0.02);
   await loadBasics();
-  await loadShapes();
-  for (const d of report.days || []) {
-    if (d.date < today) continue;
-    await getFile(`day-${d.date}.json.gz`, MAX_AGE.day).catch(() => {});
-  }
+  onProgress(0.1);
   const region = pos ? areaFor(pos.lat, pos.lon) : null;
-  if (region) await getFile(region.file, MAX_AGE.walk).catch(() => {});
+  const names = (report.days || []).filter((d) => d.date >= today).map((d) => `day-${d.date}.json.gz`);
+  // Weights roughly by size: the walking map is the big one.
+  const steps = [{ run: loadShapes, w: 1 }, ...names.map((n) => ({ run: () => getFile(n, MAX_AGE.day), w: 1 }))];
+  if (region) steps.push({ run: () => getFile(region.file, MAX_AGE.walk), w: 6 });
+  const total = steps.reduce((s, x) => s + x.w, 0);
+  let done = 0;
+  for (const st of steps) {
+    await Promise.resolve(st.run()).catch(() => {});
+    done += st.w;
+    onProgress(0.1 + 0.9 * (done / total));
+  }
   dropOldDays(today).catch(() => {});
   try {
     localStorage.setItem(PREFETCH_KEY, today);

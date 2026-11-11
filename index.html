@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-title" content="AcrossTransit">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="style.css?v=40">
+  <link rel="stylesheet" href="style.css?v=41">
 </head>
 <body>
   <div id="offline-banner" class="offline-banner" hidden>You're offline · own planner only</div>
@@ -80,6 +80,10 @@
   <!-- Map tab -->
   <div id="map-view" class="view">
     <div id="map"></div>
+    <div id="prep-bar" class="prep-bar" hidden>
+      <div id="prep-fill" class="prep-fill"></div>
+      <span class="prep-text">Preparing the offline maps</span>
+    </div>
     <button id="near-btn" type="button" class="map-btn near-btn" aria-label="Departures near me">🚏</button>
     <button id="centre-btn" type="button" class="map-btn" aria-label="Centre on me">◎</button>
     <div id="route-bar" class="route-bar" hidden>
@@ -175,6 +179,6 @@
   </nav>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script type="module" src="js/app.js?v=40"></script>
+  <script type="module" src="js/app.js?v=41"></script>
 </body>
 </html>

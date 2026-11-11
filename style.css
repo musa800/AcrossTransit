@@ -639,3 +639,40 @@ p { margin: 4px 0; }
   cursor: pointer;
 }
 .day-btn:disabled { opacity: 0.35; cursor: default; }
+
+/* Map tab: thin progress bar while the offline data downloads */
+.prep-bar {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 12px; right: 12px;
+  z-index: 1100;
+  height: 16px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #8a8f98;
+  pointer-events: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+.prep-bar[hidden] { display: none; }
+#map-view.plan-mode .prep-bar { display: none; }
+.prep-fill {
+  height: 100%;
+  width: 0;
+  background: repeating-linear-gradient(-45deg, #4a9af0 0 8px, #8fc3fa 8px 16px);
+  background-size: 22.6px 22.6px;
+  animation: prep-stripes 0.8s linear infinite;
+  transition: width 0.4s ease;
+}
+@keyframes prep-stripes { to { background-position: 22.6px 0; } }
+.prep-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
+  letter-spacing: 0.02em;
+}
