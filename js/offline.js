@@ -11,6 +11,8 @@
 // OpenStreetMap at 5 km/h, with no transfer margin; transfers with less than
 // two minutes to spare are labelled tight.
 
+import { decodePolyline } from "./peatus.js?v=36";
+
 const BASE = "data/";
 const CACHE = "acrosstransit-data-v1";
 const WALK_SPEED = 5 / 3.6;     // m/s
@@ -31,7 +33,7 @@ const SEARCH_WINDOW_S = 3 * 3600;
 const DAY = 86400;
 
 const HOUR = 3600 * 1000;
-const MAX_AGE = { report: 0, stops: 24 * HOUR, transfers: 24 * HOUR, day: 12 * HOUR, walk: 7 * 24 * HOUR };
+const MAX_AGE = { report: 0, stops: 24 * HOUR, transfers: 24 * HOUR, day: 12 * HOUR, walk: 7 * 24 * HOUR, shapes: 7 * 24 * HOUR };
 
 // ---------------------------------------------------------------- downloading and keeping files
 
@@ -159,6 +161,51 @@ async function loadDay(ymd) {
   for (let c = 0; c < n; c++) day.tripConns[day.trip[c]][day.seq[c]] = c;
   days.set(ymd, day);
   return day;
+}
+
+// ---------------------------------------------------------------- route lines (road shapes)
+
+let shapes = null;          // encoded lines, or false if unavailable
+const decoded = new Map();  // shape index -> [[lat, lon], ...]
+
+async function loadShapes() {
+  if (shapes !== null) return shapes;
+  try {
+    shapes = (await gunzipJson(await getFile("shapes.json.gz", MAX_AGE.shapes))).shapes || false;
+  } catch {
+    shapes = false; // draw rides stop to stop instead
+  }
+  return shapes;
+}
+
+function shapeLine(i) {
+  let line = decoded.get(i);
+  if (!line) decoded.set(i, (line = decodePolyline(shapes[i])));
+  return line;
+}
+
+/**
+ * The road line of a ride from stop i0 to stop i1 of a pattern, or null if
+ * there's no shape (then the ride is drawn stop to stop).
+ */
+function ridePoints(raw, p, i0, i1) {
+  if (!shapes || !raw.pshape) return null;
+  const si = raw.pshape[p];
+  const pos = raw.pstops?.[p];
+  if (si == null || si < 0 || !pos || !pos[i0] || !pos[i1]) return null;
+  const line = shapeLine(si);
+  const [s0, f0] = pos[i0];
+  const [s1, f1] = pos[i1];
+  if (s1 < s0 || s1 >= line.length - 1 + (f1 === 0 ? 1 : 0)) return null;
+  const at = (seg, f) => {
+    const a = line[seg], b = line[Math.min(seg + 1, line.length - 1)];
+    const t = f / 1000;
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  };
+  const pts = [at(s0, f0)];
+  for (let k = s0 + 1; k <= s1; k++) pts.push(line[k]);
+  pts.push(at(s1, f1));
+  return pts;
 }
 
 // ---------------------------------------------------------------- walking networks
@@ -487,6 +534,7 @@ function stopPlace(si) {
 }
 
 async function buildTrip(day, midnight, result, from, to) {
+  await loadShapes();
   const legs = [];
   const raw = day.raw;
   const walkLeg = async (a, b, start, metresGuess) => {
@@ -530,7 +578,7 @@ async function buildTrip(day, midnight, result, from, to) {
       to: stopPlace(pat[i1]),
       stops: i1 - i0,
       passStops: pat.slice(i0 + 1, i1).map((si) => ({ gtfsId: stops[si].id, name: stops[si].name, lat: stops[si].lat, lon: stops[si].lon })),
-      points: pat.slice(i0, i1 + 1).map((si) => [stops[si].lat, stops[si].lon]),
+      points: ridePoints(raw, tr[1], i0, i1) || pat.slice(i0, i1 + 1).map((si) => [stops[si].lat, stops[si].lon]),
     };
     if (legs.length === 0) {
       // First walk: leave just in time for the first ride.

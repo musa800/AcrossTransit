@@ -2,7 +2,7 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=35";
+import { getVehicles, lineKey } from "./vehicles.js?v=36";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -28,6 +28,44 @@ const CELL_LON = 0.04;  // ≈ 2.3 km at Estonian latitudes
 const cells = new Map();     // "i:j" -> "loading" | "done"
 const cellTime = new Map();  // "i:j" -> when it was loaded (ms), for the 7-day memory
 const stopsById = new Map(); // every stop loaded so far
+// The same stops in small squares (~550 m), so only nearby ones are checked.
+const GRID_LAT = 0.005, GRID_LON = 0.01;
+const stopGrid = new Map(); // "i:j" -> Map gtfsId -> stop
+
+function gridAdd(st) {
+  const key = `${Math.floor(st.lat / GRID_LAT)}:${Math.floor(st.lon / GRID_LON)}`;
+  let cellMap = stopGrid.get(key);
+  if (!cellMap) stopGrid.set(key, (cellMap = new Map()));
+  cellMap.set(st.gtfsId, st);
+}
+
+function putStop(st) {
+  stopsById.set(st.gtfsId, st);
+  gridAdd(st);
+}
+
+/** Stops within radius (m) of a point: only the grid squares around it are looked at. */
+function stopsNear(lat, lon, radius) {
+  const kx = 111320 * Math.cos((lat * Math.PI) / 180); // metres per degree of longitude here
+  const ky = 110574;                                    // metres per degree of latitude
+  const di = Math.ceil(radius / ky / GRID_LAT);
+  const dj = Math.ceil(radius / kx / GRID_LON);
+  const ci = Math.floor(lat / GRID_LAT), cj = Math.floor(lon / GRID_LON);
+  const r2 = radius * radius;
+  const out = [];
+  for (let i = ci - di; i <= ci + di; i++) {
+    for (let j = cj - dj; j <= cj + dj; j++) {
+      const cellMap = stopGrid.get(`${i}:${j}`);
+      if (!cellMap) continue;
+      for (const st of cellMap.values()) {
+        // Flat-map distance: accurate to centimetres at these distances, and fast.
+        const dx = (st.lon - lon) * kx, dy = (st.lat - lat) * ky;
+        if (dx * dx + dy * dy <= r2) out.push(st);
+      }
+    }
+  }
+  return out;
+}
 let stopLoader = null;       // async (box) => stops
 let pendingPreload = null;   // { lat, lon } waiting for setStopSource
 
@@ -57,7 +95,7 @@ function loadStore() {
     }
   }
   for (const [gtfsId, name, code, desc, lat, lon] of data.stops) {
-    if (cellTime.has(cellOf(lat, lon))) stopsById.set(gtfsId, { gtfsId, name, code, desc, lat, lon });
+    if (cellTime.has(cellOf(lat, lon))) putStop({ gtfsId, name, code, desc, lat, lon });
   }
 }
 
@@ -97,7 +135,7 @@ function saveStore() {
 }
 
 function addStops(stops) {
-  for (const s of stops) stopsById.set(s.gtfsId, s);
+  for (const s of stops) putStop(s);
 }
 
 /** Load all stops within ~5 km of a point in one request (squares already known are skipped). */
@@ -470,11 +508,21 @@ const MOVE_LOAD_MS = 150;
 let lastMoveLoad = 0;
 let framePending = false;
 
+let lastDrawCenter = null;
+const MOVE_MIN_M = 20; // don't update the dots for smaller moves than this
+
 function onMoving() {
   if (framePending) return;
   framePending = true;
   requestAnimationFrame(() => {
     framePending = false;
+    const c = map.getCenter();
+    if (lastDrawCenter) {
+      const kx = 111320 * Math.cos((c.lat * Math.PI) / 180);
+      const dx = (c.lng - lastDrawCenter.lng) * kx, dy = (c.lat - lastDrawCenter.lat) * 110574;
+      if (dx * dx + dy * dy < MOVE_MIN_M * MOVE_MIN_M) return;
+    }
+    lastDrawCenter = c;
     const now = performance.now();
     const load = now - lastMoveLoad >= MOVE_LOAD_MS;
     if (load) lastMoveLoad = now;
@@ -516,10 +564,10 @@ function renderStops(hide, { moving = false, load = true } = {}) {
             ? [...selected.routeStops.values()].filter((s) => s.gtfsId !== selected.stop.gtfsId)
             : stopOnly
               ? []
-              : stopsById.values();
+              : stopsNear(center.lat, center.lng, STOP_RADIUS_M); // already within 2 km
+  if (!moving) lastDrawCenter = center;
   if (!hide) {
     for (const s of source) {
-      if (!limited && map.distance(center, [s.lat, s.lon]) > STOP_RADIUS_M) continue;
       keep.add(s.gtfsId);
       const existing = stopDots.get(s.gtfsId);
       if (existing && existing._small === !!small) continue;

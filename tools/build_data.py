@@ -11,6 +11,7 @@ gzipped files into the website's data/ folder:
   data/day-YYYYMMDD.json.gz  one timetable per day (today + 7 days)
   data/walk-<area>.json.gz  the walking network per area (harju, tartu)
   data/transfers.json.gz  real walking distances between nearby stops
+  data/shapes.json.gz     the road line of each route variant (for drawing rides)
 
 Kept lines: Tallinna Linnatransport (Tallinn city), all Harju county lines,
 Tartu city and Tartu county lines, and Elron trains (whole network).
@@ -57,6 +58,7 @@ DAYS = 8                 # today + 7 days
 TRANSFER_RADIUS_M = 700  # stop-to-stop walks are worked out up to this distance
 SNAP_RADIUS_M = 60       # a stop joins the walking network at nodes this close
 SNAP_NODES = 4           # ... at most this many of them
+SHAPE_TOLERANCE_M = 5    # route lines are simplified to this accuracy
 FALLBACK_DETOUR = 1.3    # stops outside the network: straight line + 30%
 
 WALKABLE = {
@@ -132,7 +134,8 @@ class Timetable:
         self.stops = {}        # stop_id -> dict(name, code, desc, lat, lon)
         self.agencies = {}     # key -> name
         self.routes = {}       # key -> (short, long, mode, agency key, color)
-        self.trips = {}        # key -> (route key, service key, headsign)
+        self.trips = {}        # key -> (route key, service key, headsign, shape key or "")
+        self.shapes = {}       # shape key -> [(lat, lon), ...] in order
         self.stop_times = defaultdict(list)  # trip key -> [(seq, stop_id, arr, dep)]
         self.calendar = {}     # service key -> (weekday flags, start, end)
         self.dates = defaultdict(dict)  # service key -> {yyyymmdd: 1 added / 2 removed}
@@ -178,7 +181,8 @@ class Timetable:
                 continue
             key = f"{name}:{t['trip_id']}"
             trips[t["trip_id"]] = key
-            self.trips[key] = (rk, f"{name}:{t['service_id']}", t.get("trip_headsign", "") or "")
+            shape = t.get("shape_id", "") or ""
+            self.trips[key] = (rk, f"{name}:{t['service_id']}", t.get("trip_headsign", "") or "", f"{name}:{shape}" if shape else "")
         used_stops = set()
         n = 0
         with z.open("stop_times.txt") as f:
@@ -204,6 +208,20 @@ class Timetable:
                     "lat": float(s["stop_lat"]),
                     "lon": float(s["stop_lon"]),
                 }
+        used_shapes = {v[3] for k, v in self.trips.items() if k.startswith(name + ":") and v[3]}
+        pts = defaultdict(list)
+        try:
+            with z.open("shapes.txt") as f:
+                for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
+                    key = f"{name}:{row['shape_id']}"
+                    if key in used_shapes:
+                        pts[key].append((int(row["shape_pt_sequence"]), float(row["shape_pt_lat"]), float(row["shape_pt_lon"])))
+        except KeyError:
+            pass  # no shapes in this feed: rides are drawn stop to stop
+        for key, lst in pts.items():
+            lst.sort()
+            self.shapes[key] = [(la, lo) for _, la, lo in lst]
+        report["sources"][name]["shapes"] = len(pts)
         services = {v[1] for v in self.trips.values() if v[1].startswith(name + ":")}
         for c in read_csv(z, "calendar.txt"):
             key = f"{name}:{c['service_id']}"
@@ -230,7 +248,111 @@ class Timetable:
         return bool(cal and cal[1] <= ymd <= cal[2] and cal[0][weekday])
 
 
-def build_days(tt, stop_index, start, out_dir):
+# ---------------------------------------------------------------- route shapes
+
+
+def simplify(points, tol_m):
+    """Douglas-Peucker on a short local projection (metres)."""
+    if len(points) < 3:
+        return list(points)
+    lat0 = points[0][0]
+    kx = 111320 * math.cos(math.radians(lat0))
+    ky = 110574
+    xy = [((lo - points[0][1]) * kx, (la - lat0) * ky) for la, lo in points]
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        a, b = stack.pop()
+        ax, ay = xy[a]
+        bx, by = xy[b]
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        best, bi = -1.0, -1
+        for i in range(a + 1, b):
+            px, py = xy[i]
+            if L2 == 0:
+                d = math.hypot(px - ax, py - ay)
+            else:
+                t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+                d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+            if d > best:
+                best, bi = d, i
+        if best > tol_m:
+            keep[bi] = True
+            stack.append((a, bi))
+            stack.append((bi, b))
+    return [p for p, k in zip(points, keep) if k]
+
+
+def encode_polyline(points):
+    """Google encoded polyline (1e-5 degrees), as decoded by the app."""
+    out = []
+    plat = plon = 0
+    for la, lo in points:
+        a, b = round(la * 1e5), round(lo * 1e5)
+        for v in (a - plat, b - plon):
+            v = ~(v << 1) if v < 0 else v << 1
+            while v >= 0x20:
+                out.append(chr((0x20 | (v & 0x1F)) + 63))
+                v >>= 5
+            out.append(chr(v + 63))
+        plat, plon = a, b
+    return "".join(out)
+
+
+def stop_positions(line, stop_pts):
+    """
+    Where each stop sits along a line, in order: [segment index, fraction * 1000]
+    per stop. Searches forward from the previous stop, so loops and routes that
+    pass a street twice are handled. None if the line doesn't fit the stops.
+    """
+    lat0 = line[0][0]
+    kx = 111320 * math.cos(math.radians(lat0))
+    ky = 110574
+    xy = [(lo * kx, la * ky) for la, lo in line]
+    out = []
+    seg0 = 0
+    for la, lo in stop_pts:
+        px, py = lo * kx, la * ky
+        best = None
+        for i in range(seg0, len(xy) - 1):
+            ax, ay = xy[i]
+            bx, by = xy[i + 1]
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+            d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+            if best is None or d < best[0] - 0.01:
+                best = (d, i, t)
+            elif best[0] < 40 and d > best[0] + 400:
+                break  # found it close by; don't jump to a later pass of the same street
+        if best is None or best[0] > 150:
+            return None
+        out.append([best[1], round(best[2] * 1000)])
+        seg0 = best[1]
+    return out
+
+
+def build_shapes(tt, out_dir):
+    """Simplify and write all used shapes; returns (shape key -> index, simplified lines)."""
+    keys = sorted({v[3] for v in tt.trips.values() if v[3] and v[3] in tt.shapes})
+    index, lines, encoded = {}, [], []
+    for k in keys:
+        line = simplify(tt.shapes[k], SHAPE_TOLERANCE_M)
+        if len(line) < 2:
+            continue
+        index[k] = len(lines)
+        lines.append(line)
+        encoded.append(encode_polyline(line))
+    size = write_gz(os.path.join(out_dir, "shapes.json.gz"), {"shapes": encoded})
+    report["files"]["shapes.json.gz"] = size
+    report["counts"]["shapes"] = len(lines)
+    log(f"shapes.json.gz: {len(lines)} route lines, {size // 1024} KB")
+    return index, lines
+
+
+def build_days(tt, stop_index, start, out_dir, shape_index=None, shape_lines=None):
     """One file per day. Trips past midnight from the day before are included, shifted by -24 h."""
     route_keys = sorted(tt.routes)
     route_index = {k: i for i, k in enumerate(route_keys)}
@@ -247,10 +369,13 @@ def build_days(tt, stop_index, start, out_dir):
         ordered[tk] = sts
 
     files = []
+    pos_cache = {}
+    tt_stops = [tt.stops[sid] for sid in sorted(tt.stops)]  # same order as stop_index
     for d in range(DAYS):
         day = start + dt.timedelta(days=d)
         prev = day - dt.timedelta(days=1)
         patterns, pattern_index = [], {}
+        pshape, pstops = [], []  # per pattern: shape index (-1 = none), stop positions along it
         profiles, profile_index = [], {}
         heads, head_index = [], {}
         trips_out = []
@@ -259,12 +384,23 @@ def build_days(tt, stop_index, start, out_dir):
             sts = ordered.get(tk)
             if not sts or len(sts) < 2:
                 return
-            rk, _, head = tt.trips[tk]
+            rk, _, head, shape = tt.trips[tk]
             seq = tuple(stop_index[s[1]] for s in sts)
             p = pattern_index.get(seq)
             if p is None:
                 p = pattern_index[seq] = len(patterns)
                 patterns.append(list(seq))
+                si, pos = -1, None
+                if shape_index is not None and shape in shape_index:
+                    si = shape_index[shape]
+                    key = (si, seq)
+                    pos = pos_cache.get(key, "x")
+                    if pos == "x":
+                        pos = pos_cache[key] = stop_positions(shape_lines[si], [(tt_stops[i]["lat"], tt_stops[i]["lon"]) for i in seq])
+                    if pos is None:
+                        si = -1
+                pshape.append(si)
+                pstops.append(pos or [])
             # Timing profile: dwell at stop 0, then (run, dwell) for each next stop.
             prof = [sts[0][3] - sts[0][2]]
             for i in range(1, len(sts)):
@@ -282,7 +418,7 @@ def build_days(tt, stop_index, start, out_dir):
             trips_out.append([route_index[rk], p, q, sts[0][2] + shift, h])
 
         ymd, pymd = day.strftime("%Y%m%d"), prev.strftime("%Y%m%d")
-        for tk, (rk, service, head) in tt.trips.items():
+        for tk, (rk, service, head, _shape) in tt.trips.items():
             if tt.runs_on(service, ymd, day.weekday()):
                 add(tk, 0)
             if tt.runs_on(service, pymd, prev.weekday()):
@@ -299,6 +435,10 @@ def build_days(tt, stop_index, start, out_dir):
                 "routes": routes_out,
                 "headsigns": heads,
                 "patterns": patterns,
+                # per pattern: route line in shapes.json.gz (-1 = none), and each stop's
+                # position on it as [segment, fraction * 1000]
+                "pshape": pshape,
+                "pstops": pstops,
                 "profiles": profiles,
                 # [route, pattern, profile, first arrival (s after midnight), headsign]
                 "trips": trips_out,
@@ -562,7 +702,12 @@ def main():
     )
     report["counts"]["stops"] = len(stop_ids)
     report["counts"]["routes"] = len(tt.routes)
-    report["days"] = build_days(tt, stop_index, start, args.out)
+    try:
+        shape_index, shape_lines = build_shapes(tt, args.out)
+    except Exception as e:  # noqa: BLE001
+        problem(f"shapes: {e}")
+        shape_index, shape_lines = None, None
+    report["days"] = build_days(tt, stop_index, start, args.out, shape_index, shape_lines)
 
     try:
         osm = args.osm
