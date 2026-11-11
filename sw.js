@@ -10,7 +10,7 @@
 //
 // Keep VERSION equal to the ?v= number used in index.html and js/.
 
-const VERSION = "39";
+const VERSION = "40";
 const CACHE = `acrosstransit-v${VERSION}`;
 const LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/";
 const TILES = "acrosstransit-tiles-v1";

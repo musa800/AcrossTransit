@@ -623,7 +623,9 @@ p { margin: 4px 0; }
   border: 1px solid var(--line);
   color: var(--muted);
 }
-.source-tag.offline { border-color: var(--accent); color: var(--accent-text); }
+/* Official = Peatus.ee (blue), Unofficial = the app's own planner (grey) */
+.source-tag.online { border-color: var(--accent); color: var(--accent); }
+.source-tag.offline { border-color: var(--line); color: var(--muted); }
 
 /* "+N" chip: the rest of a busy stop's lines */
 .chip-more {
