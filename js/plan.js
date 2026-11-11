@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=29";
-import { searchPlaces } from "./geocode.js?v=29";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=30";
+import { searchPlaces } from "./geocode.js?v=30";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=29";
-import { lineKey } from "./vehicles.js?v=29";
+} from "./map.js?v=30";
+import { lineKey } from "./vehicles.js?v=30";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -542,10 +542,17 @@ async function runPlan() {
     itineraries = result;
     showList();
     // Then the app's own check for tight connections the planner won't offer.
+    if (diag) diag.ownRunning = true;
+    refreshSearchDetails();
     const extra = await ownTightCheck(result, when, arriveBy);
-    if (run !== planRun || !extra.length) return;
-    itineraries = mergeTrips(result, extra, arriveBy);
-    showList();
+    if (run !== planRun) return;
+    if (diag) diag.ownRunning = false;
+    if (extra.length) {
+      itineraries = mergeTrips(result, extra, arriveBy);
+      // Redraw the list only if it's on screen and gained trips (don't close an open trip).
+      if (onListView() && diag.own) showList();
+    }
+    refreshSearchDetails();
   } catch (err) {
     if (run !== planRun) return;
     planMessage("Couldn't plan the trip: " + err.message);
@@ -606,6 +613,17 @@ function showList() {
   box.appendChild(searchDetails());
 }
 
+/** True while the trip list (not one trip's steps) is shown. */
+function onListView() {
+  return !$("plan-sheet").hidden && $("plan-back").hidden;
+}
+
+/** Update the Search line in place, if the list is on screen. */
+function refreshSearchDetails() {
+  const old = document.getElementById("search-details");
+  if (old) old.replaceWith(searchDetails());
+}
+
 /** A small line describing what the planner accepted and found (for checking the tight search). */
 function searchDetails() {
   const ok = (k) => (unsupported.has(k) ? "✗" : "✓");
@@ -614,7 +632,10 @@ function searchDetails() {
     `no margin ${ok("minTransferTime")}`,
     `board/alight slack ${ok("boardSlack")}${ok("alightSlack")}`,
   ];
-  if (diag) parts.push(`normal ${diag.normal} · tight ${diag.tight} · new ${diag.added} · own check +${diag.own}`);
+  if (diag) {
+    parts.push(`normal ${diag.normal} · tight ${diag.tight} · new ${diag.added}`);
+    parts.push(diag.ownRunning ? "own check running…" : `own check +${diag.own}`);
+  }
   const st = diag?.ownStats;
   if (st && st.checked != null) {
     let o = `own check looked at ${st.checked} transfer${st.checked === 1 ? "" : "s"}, ${st.runs1}+${st.runs2} runs`;
@@ -625,7 +646,9 @@ function searchDetails() {
   let text = "Search: " + parts.join(" · ");
   if (diag?.tightError) text += ` · tight search error: ${diag.tightError}`;
   if (diag?.ownError) text += ` · own check error: ${diag.ownError}`;
-  return el("li", "muted small search-details", text);
+  const li = el("li", "muted small search-details", text);
+  li.id = "search-details";
+  return li;
 }
 
 function showDetails(i) {

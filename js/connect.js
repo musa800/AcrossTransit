@@ -8,7 +8,7 @@
 //
 // Pure planning logic is in buildTightTrips (no network), so it can be tested.
 
-import { getDeparturesInWindows, getTripsStoptimes } from "./peatus.js?v=29";
+import { getDeparturesInWindows, getTripsStoptimes } from "./peatus.js?v=30";
 
 const WINDOW_S = 90 * 60;   // look at trips up to 90 min before the planned ones
 const WALK_SPEED = 5 / 3.6; // m/s
