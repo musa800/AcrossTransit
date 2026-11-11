@@ -1,13 +1,13 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=24";
-import { searchPlaces } from "./geocode.js?v=24";
+import { searchStops, planTrip, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=25";
+import { searchPlaces } from "./geocode.js?v=25";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=24";
-import { lineKey } from "./vehicles.js?v=24";
+} from "./map.js?v=25";
+import { lineKey } from "./vehicles.js?v=25";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -300,6 +300,100 @@ function leavesTallinn() {
   return !inTallinnArea(ends.from) || !inTallinnArea(ends.to);
 }
 
+// ---------- Two searches per plan ----------
+//
+// Every plan runs two searches at the same time, both at 5 km/h walking:
+// one with the planner's normal transfer margin, one with no margin. Trips
+// only the second one finds have a tight transfer and are labelled so.
+
+const WALK_SPEED = 5 / 3.6;  // 5 km/h in m/s
+const MAX_TRIPS = 8;         // cap on the merged list
+const NORMAL_MARGIN_S = 120; // the planner's usual transfer margin (for labelling)
+
+let walkSpeedSupported = true;
+let tightSupported = true;
+
+const isUnknownArg = (err, name) =>
+  /UnknownArgument|FieldUndefined|WrongType|Validation/i.test(err.message) && err.message.includes(name);
+
+/** One search, at 5 km/h if the server accepts it. */
+async function searchOnce(when, arriveBy, opts) {
+  if (walkSpeedSupported) {
+    try {
+      return await planTrip(ends.from, ends.to, when, arriveBy, { ...opts, walkSpeed: WALK_SPEED });
+    } catch (err) {
+      if (!isUnknownArg(err, "walkSpeed")) throw err;
+      walkSpeedSupported = false;
+    }
+  }
+  return planTrip(ends.from, ends.to, when, arriveBy, opts);
+}
+
+/** Same lines, boarding at the same stops, at the same times = the same trip. */
+function tripKey(it) {
+  const rides = it.legs.filter((l) => l.transit).map((l) => `${l.mode}:${l.line}@${l.from.name}@${l.start}`);
+  return `${it.start}|${it.end}|${rides.join(",")}`;
+}
+
+/** Normal and no-margin searches together; returns the merged trips (tight ones marked). */
+async function searchBoth(when, arriveBy, opts = {}) {
+  const normal = searchOnce(when, arriveBy, opts);
+  const tight = tightSupported
+    ? searchOnce(when, arriveBy, { ...opts, minTransferTime: 0 }).catch((err) => {
+        if (isUnknownArg(err, "minTransferTime")) tightSupported = false;
+        return []; // the normal search still counts
+      })
+    : Promise.resolve([]);
+  const [a, b] = await Promise.all([normal, tight]);
+  const merged = new Map();
+  for (const it of a) merged.set(tripKey(it), { ...it, tight: false });
+  for (const it of b) {
+    const k = tripKey(it);
+    if (!merged.has(k)) merged.set(k, { ...it, tight: true });
+  }
+  return [...merged.values()];
+}
+
+function sortTrips(list, arriveBy) {
+  return list.sort((x, y) =>
+    (arriveBy ? y.end - x.end : x.start - y.start) || (x.tight - y.tight));
+}
+
+/**
+ * Time to spare at each transfer: for each ride after the first, the seconds
+ * left after getting off the previous ride and walking. Map leg index -> { walk, spare }.
+ */
+function transferTimes(it) {
+  const out = new Map();
+  let prevRide = null;
+  let walk = 0;
+  it.legs.forEach((l, i) => {
+    if (!l.transit) {
+      if (prevRide) walk += l.duration;
+      return;
+    }
+    if (prevRide) out.set(i, { walk, spare: l.start - prevRide.end - walk });
+    prevRide = l;
+    walk = 0;
+  });
+  return out;
+}
+
+/** For a tight trip, the transfers to label (spare under the normal margin, or the tightest one). */
+function tightTransfers(it) {
+  if (!it.tight) return new Map();
+  const all = transferTimes(it);
+  const tight = new Map([...all].filter(([, t]) => t.spare < NORMAL_MARGIN_S));
+  if (tight.size || !all.size) return tight;
+  const [idx, t] = [...all].sort((x, y) => x[1].spare - y[1].spare)[0];
+  return new Map([[idx, t]]);
+}
+
+function spareText(seconds) {
+  if (seconds < 60) return "less than a minute to spare";
+  return `${Math.floor(seconds / 60)} min to spare`; // round down: never promise more time than there is
+}
+
 // Whether the server accepts the "banned operators" option (found out on first use).
 let bannedSupported = true;
 let citySearchedUntil = 0; // how far the last city-only search looked (Unix seconds)
@@ -317,13 +411,13 @@ async function cityRound(when, arriveBy) {
   if (bannedSupported) {
     try {
       const others = await getNonTltAgencyIds();
-      return await planTrip(ends.from, ends.to, when, arriveBy, { bannedAgencies: others.join(",") });
+      return await searchBoth(when, arriveBy, { bannedAgencies: others.join(",") });
     } catch (err) {
       if (!/UnknownArgument|FieldUndefined|WrongType|banned/i.test(err.message)) throw err;
       bannedSupported = false;
     }
   }
-  return planTrip(ends.from, ends.to, when, arriveBy, { count: 12 });
+  return searchBoth(when, arriveBy, { count: 12 });
 }
 
 /**
@@ -342,8 +436,9 @@ async function planCityOnly(when, arriveBy) {
     const trips = await cityRound(cursor, arriveBy);
     if (!trips.length) break;
     for (const it of trips.filter(tltOnly)) {
-      const key = `${it.start}|${it.end}|${it.legs.map((l) => l.line).join(",")}`;
-      found.set(key, it);
+      const key = tripKey(it);
+      const old = found.get(key);
+      if (!old || (old.tight && !it.tight)) found.set(key, it);
     }
     // Move the search time past the trips we've seen.
     if (arriveBy) {
@@ -360,8 +455,8 @@ async function planCityOnly(when, arriveBy) {
     if (found.size >= CITY_WANTED) break;
   }
 
-  const list = [...found.values()].sort((a, b) => (arriveBy ? b.end - a.end : a.start - b.start));
-  return { trips: list.slice(0, 5), searchedUntil };
+  const list = sortTrips([...found.values()], arriveBy);
+  return { trips: list.slice(0, MAX_TRIPS), searchedUntil };
 }
 
 async function runPlan() {
@@ -380,7 +475,7 @@ async function runPlan() {
       result = r.trips;
       citySearchedUntil = r.searchedUntil;
     } else {
-      result = await planTrip(ends.from, ends.to, when, arriveBy);
+      result = sortTrips(await searchBoth(when, arriveBy), arriveBy).slice(0, MAX_TRIPS);
     }
     if (run !== planRun) return;
     itineraries = result;
@@ -434,6 +529,7 @@ function showList() {
       ? `Walk only · ${metres(it.walkDistance)}`
       : `${transfers === 0 ? "No transfers" : transfers === 1 ? "1 transfer" : `${transfers} transfers`} · ${metres(it.walkDistance)} walk`;
     li.appendChild(el("div", "muted small", info));
+    if (it.tight) li.appendChild(el("span", "tight-badge", "Tight transfer"));
     li.addEventListener("click", () => showDetails(i));
     box.appendChild(li);
   });
@@ -451,11 +547,20 @@ function showDetails(i) {
   strip.innerHTML = "";
   strip.appendChild(legStrip(it));
   const colors = colorsForLegs(it.legs);
+  const tightAt = tightTransfers(it);
   const box = $("plan-content");
   box.innerHTML = "";
   box.scrollTop = 0;
 
   it.legs.forEach((l, idx) => {
+    if (tightAt.has(idx)) {
+      const t = tightAt.get(idx);
+      const walkPart = t.walk > 0 ? `${minutes(t.walk)} min walk, ` : "same stop, ";
+      const warn = el("li", "step tight-step");
+      warn.appendChild(el("span", "step-icon", "⚠"));
+      warn.appendChild(el("span", "", `Tight transfer: ${walkPart}${spareText(Math.max(0, t.spare))}`));
+      box.appendChild(warn);
+    }
     const li = el("li", "step");
     const isLast = idx === it.legs.length - 1;
     if (!l.transit) {

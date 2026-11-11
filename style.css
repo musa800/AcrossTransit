@@ -579,3 +579,25 @@ p { margin: 4px 0; }
   font-weight: 700;
 }
 .day-arrow:disabled { opacity: 0.35; cursor: default; }
+
+/* Tight transfers */
+.tight-badge {
+  justify-self: start;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: #fff6db;
+  color: #5c4500;
+  border: 1px solid #f0d68a;
+}
+.step.tight-step {
+  align-items: center;
+  background: #fff6db;
+  border-color: #f0d68a;
+  color: #5c4500;
+  font-size: 0.9rem;
+}
+@media (prefers-color-scheme: dark) {
+  .tight-badge, .step.tight-step { background: #3a3215; border-color: #6b5a1d; color: #f1dc9a; }
+}
