@@ -2,8 +2,8 @@
 //  - "stops": stop dots, a chosen stop with its routes, route stops and live buses
 //  - "plan":  stop dots for picking start/destination, a planned trip and its live buses
 
-import { getVehicles, lineKey } from "./vehicles.js?v=44";
-import { lineColor as colorOf, legColor } from "./colors.js?v=44";
+import { getVehicles, lineKey } from "./vehicles.js?v=45";
+import { lineColor as colorOf, legColor } from "./colors.js?v=45";
 
 const REFRESH_MS = 10000;
 const CENTER = [59.437, 24.7536]; // Tallinn old town
@@ -215,7 +215,8 @@ let onStatus = () => {};
 
 export function initMap(el, statusCallback) {
   onStatus = statusCallback;
-  map = L.map(el, { zoomControl: false }).setView(CENTER, 15);
+  // Double-tap zoom is our own (see initTapZoom), so single taps can wait for a second one.
+  map = L.map(el, { zoomControl: false, doubleClickZoom: false }).setView(CENTER, 15);
   L.control.zoom({ position: "bottomright" }).addTo(map);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
@@ -248,7 +249,8 @@ export function initMap(el, statusCallback) {
     lastMoveAt = Date.now();
     $map("map-view")?.classList.remove("moving");
   });
-  map.on("click", onMapTap);
+  map.on("click", onMapClick);
+  initTapZoom(el);
   // Leaflet closes an open popup just before the tap reaches onMapTap;
   // remember when, so that tap only closes the popup.
   map.on("popupclose", () => (lastPopupClose = Date.now()));
@@ -651,9 +653,98 @@ function stopLook(zoom, small) {
   return { radius: radius * k, weight: Math.max(0.6, weight * k), key: `${radius}|${small}` };
 }
 
+// ---------- Taps and double-tap zoom ----------
+//
+// A single tap waits a moment (TAP_WAIT_MS) in case a second tap follows.
+// Double tap: zoom in one step. Double tap and hold: slide down to zoom in,
+// up to zoom out, around the tapped point; lifting settles on a whole zoom level.
+
+const TAP_WAIT_MS = 250;
+const DOUBLE_MS = 300;    // max time between the taps
+const DOUBLE_PX = 40;     // max distance between the taps
+const ZOOM_PX = 110;      // finger movement per zoom level
+let pendingTap = null;    // timer of a waiting single tap
+let lastUp = { t: 0, x: 0, y: 0 };
+let tapZoom = null;       // the double-tap gesture in progress
+let ignoreClickUntil = 0;
+
+function onMapClick(e) {
+  if (Date.now() < ignoreClickUntil) return; // the second tap of a double tap
+  clearTimeout(pendingTap);
+  pendingTap = setTimeout(() => {
+    pendingTap = null;
+    onMapTap(e);
+  }, TAP_WAIT_MS);
+}
+
+function initTapZoom(el) {
+  const pt = (e) => {
+    const r = el.getBoundingClientRect();
+    return L.point(e.clientX - r.left, e.clientY - r.top);
+  };
+  const stop = (e) => {
+    e.stopPropagation();
+    if (e.cancelable) e.preventDefault();
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (!e.isPrimary) {
+      // A second finger: it's a pinch, not our gesture.
+      if (tapZoom) endTapZoom(false);
+      return;
+    }
+    const near = Math.hypot(e.clientX - lastUp.x, e.clientY - lastUp.y) < DOUBLE_PX;
+    if (performance.now() - lastUp.t < DOUBLE_MS && near) {
+      clearTimeout(pendingTap); // not a single tap after all
+      pendingTap = null;
+      const p = pt(e);
+      tapZoom = { id: e.pointerId, y: e.clientY, z0: map.getZoom(), at: map.containerPointToLatLng(p), p, moved: false };
+      map.dragging.disable();
+      map.options.zoomSnap = 0; // smooth zoom while sliding
+      stop(e);
+    }
+  }, true);
+  el.addEventListener("pointermove", (e) => {
+    if (!tapZoom || e.pointerId !== tapZoom.id) return;
+    const dy = e.clientY - tapZoom.y;
+    if (!tapZoom.moved && Math.abs(dy) < 8) return;
+    tapZoom.moved = true;
+    const z = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), tapZoom.z0 + dy / ZOOM_PX));
+    map.setZoomAround(tapZoom.p, z, { animate: false });
+    stop(e);
+  }, true);
+  const up = (e) => {
+    if (tapZoom && e.pointerId === tapZoom.id) {
+      endTapZoom(true);
+      stop(e);
+      return;
+    }
+    if (e.isPrimary) lastUp = { t: performance.now(), x: e.clientX, y: e.clientY };
+  };
+  el.addEventListener("pointerup", up, true);
+  el.addEventListener("pointercancel", (e) => {
+    if (tapZoom && e.pointerId === tapZoom.id) endTapZoom(false);
+  }, true);
+}
+
+function endTapZoom(finish) {
+  const g = tapZoom;
+  tapZoom = null;
+  lastUp = { t: 0, x: 0, y: 0 };
+  ignoreClickUntil = Date.now() + 400;
+  map.options.zoomSnap = 1;
+  map.dragging.enable();
+  if (!finish) {
+    map.setZoom(Math.round(map.getZoom()));
+    return;
+  }
+  // A plain double tap zooms in one step; after sliding, settle on a whole level.
+  const z = g.moved ? Math.round(map.getZoom()) : Math.min(map.getMaxZoom(), Math.round(g.z0) + 1);
+  map.setZoomAround(g.p, z);
+}
+
 /** A tap on the map (not on a bus or a line): find the nearest stop dot, if close enough. */
 function onMapTap(e) {
-  if (Date.now() - lastPopupClose < 400) return; // this tap closed a popup
+  if (Date.now() - lastPopupClose < 700) return; // this tap closed a popup (taps wait TAP_WAIT_MS)
   const p = e.containerPoint;
   let best = null;
   let bestDist = 22; // pixels

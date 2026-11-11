@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-title" content="AcrossTransit">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="style.css?v=44">
+  <link rel="stylesheet" href="style.css?v=45">
 </head>
 <body>
   <div id="offline-banner" class="offline-banner" hidden>You're offline · own planner only</div>
@@ -148,6 +148,7 @@
       <div class="sheet-head">
         <button id="plan-back" type="button" aria-label="Back to trips" hidden>←</button>
         <h2 id="plan-sheet-title">Trips</h2>
+        <span id="plan-offline" class="source-tag no-net" hidden>Offline</span>
         <button id="plan-collapse" type="button" aria-label="Hide search and steps" hidden>⌄</button>
         <button id="plan-close" type="button" aria-label="Close">✕</button>
       </div>
@@ -155,6 +156,9 @@
       <ul id="plan-content" class="sheet-list"></ul>
     </section>
   </div>
+
+  <!-- Small notice ("Press back again to exit") -->
+  <div id="toast" class="toast" hidden></div>
 
   <!-- Schedule: one line at the chosen stop, whole day -->
   <section id="schedule-view" class="schedule" hidden>
@@ -179,6 +183,6 @@
   </nav>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script type="module" src="js/app.js?v=44"></script>
+  <script type="module" src="js/app.js?v=45"></script>
 </body>
 </html>

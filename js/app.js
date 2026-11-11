@@ -4,20 +4,20 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule, getNearbyDepartures, getStopsPatterns,
-} from "./peatus.js?v=44";
+} from "./peatus.js?v=45";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, setMode, forgetOfflineStops, mapIdleMs,
   initLocation, getMyPosition, getLocationError, showRoute, clearRoute,
-  showNearRoutes, setNearFilter, clearNearRoutes, setNearStops,
-} from "./map.js?v=44";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=44";
-import { initRoutes, enterRoutes } from "./routes.js?v=44";
-import { lineColor } from "./colors.js?v=44";
+  showNearRoutes, setNearFilter, clearNearRoutes, setNearStops, closeMapPopup,
+} from "./map.js?v=45";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=45";
+import { initRoutes, enterRoutes } from "./routes.js?v=45";
+import { lineColor } from "./colors.js?v=45";
 import {
   offlineSupported, isOfflineStop, offlineStopDepartures, offlinePatterns, offlineNearby,
   offlineSchedule, offlineDays, offlineStopsInBox, prefetchOffline,
-} from "./offline.js?v=44";
+} from "./offline.js?v=45";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -901,6 +901,70 @@ function prefetchWithBar() {
 setTimeout(prefetchWithBar, 3000);
 
 // Installable app + opening without internet (see sw.js).
+// ---------- Back button (Android) ----------
+//
+// One extra history entry sits on top while the app runs. Back removes it; the
+// app then closes the newest window and puts the entry back. With nothing open,
+// Back goes to the Map tab; on the Map tab it asks once before leaving the app.
+
+const isOpen = (id) => !$(id).hidden;
+
+/** Close the window on top, if any. Returns true if something was closed. */
+function closeTopWindow() {
+  const onMapView = activeTab === "map" || activeTab === "plan";
+  if (onMapView && document.querySelector(".leaflet-popup")) return closeMapPopup(), true;
+  if (activeTab === "plan" && isOpen("plan-suggest")) return ($("plan-suggest").hidden = true), true;
+  if (isOpen("schedule-view")) return $("sched-back").click(), true;
+  if (activeTab === "routes" && isOpen("route-detail")) return $("route-back").click(), true;
+  if (activeTab === "stops" && isOpen("departures-panel")) return $("back-btn").click(), true;
+  if (activeTab === "plan" && isOpen("plan-sheet")) return $(isOpen("plan-back") ? "plan-back" : "plan-close").click(), true;
+  if (activeTab === "map") {
+    if (isOpen("near-sheet")) return $("near-close").click(), true;
+    if (isOpen("stop-sheet")) return $("sheet-close").click(), true;
+    if (isOpen("route-bar")) return $("route-bar-close").click(), true;
+  }
+  return false;
+}
+
+let toastTimer = null;
+function showToast(text, ms = 2500) {
+  const t = $("toast");
+  t.textContent = text;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.hidden = true), ms);
+}
+
+let exitArmed = false;
+let exitTimer = null;
+const guard = () => history.pushState({ acrosstransit: "top" }, "");
+
+function disarmExit() {
+  if (!exitArmed) return;
+  exitArmed = false;
+  clearTimeout(exitTimer);
+  $("toast").hidden = true;
+  guard();
+}
+
+history.replaceState({ acrosstransit: "base" }, "");
+guard();
+window.addEventListener("popstate", () => {
+  if (exitArmed) return; // second Back: nothing left in the history, so the app closes
+  if (closeTopWindow()) return guard();
+  if (activeTab !== "map") {
+    switchTab("map");
+    return guard();
+  }
+  // On the Map tab with nothing open: ask once. The entry isn't put back, so
+  // another Back within a moment leaves the app.
+  exitArmed = true;
+  showToast("Press back again to exit");
+  exitTimer = setTimeout(disarmExit, 2500);
+});
+// Using the app in the meantime cancels leaving.
+document.addEventListener("pointerdown", disarmExit, true);
+
 // Keep the background worker awake while the app is on screen, so map squares
 // don't wait for it to wake up at the start of a drag.
 if ("serviceWorker" in navigator) {

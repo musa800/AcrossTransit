@@ -626,6 +626,8 @@ p { margin: 4px 0; }
 /* Official = Peatus.ee (blue), Unofficial = the app's own planner (grey) */
 .source-tag.online { border-color: var(--accent); color: var(--accent); }
 .source-tag.offline { border-color: var(--line); color: var(--muted); }
+.source-tag.no-net { border-color: #e5484d; color: #e5484d; align-self: center; margin: 0 auto 0 8px; flex: none; }
+#plan-sheet-title:has(+ .no-net:not([hidden])) { flex: 0 1 auto; }
 
 /* "+N" chip: the rest of a busy stop's lines */
 .chip-more {
@@ -677,3 +679,20 @@ p { margin: 4px 0; }
   letter-spacing: 0.02em;
 }
 #map-view.moving .prep-fill { animation-play-state: paused; } /* no stripe animation while dragging */
+
+/* Small notice above the tab bar (e.g. "Press back again to exit") */
+.toast {
+  position: fixed;
+  bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom) + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3000;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(30, 31, 34, 0.92);
+  color: #fff;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
