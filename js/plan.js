@@ -1,15 +1,15 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, planMany, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=36";
-import { searchPlaces } from "./geocode.js?v=36";
+import { searchStops, planTrip, planMany, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=37";
+import { searchPlaces } from "./geocode.js?v=37";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=36";
-import { lineKey } from "./vehicles.js?v=36";
-import { findBetterTransfers } from "./connect.js?v=36";
-import { planOffline, offlineSupported } from "./offline.js?v=36";
+} from "./map.js?v=37";
+import { lineKey } from "./vehicles.js?v=37";
+import { findBetterTransfers } from "./connect.js?v=37";
+import { planOffline, offlineSupported } from "./offline.js?v=37";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -277,29 +277,10 @@ function saveCityOnly(on) {
   }
 }
 
-// Which planner to use: "both" (compare), "online" (Peatus.ee), "offline" (the app's own).
-const SOURCE_KEY = "acrosstransit.plannerSource";
-
+// Both planners run when online; with no connection only the app's own one.
 function plannerSource() {
-  const v = $("plan-source").value;
-  if (v !== "online" && !offlineSupported()) return "online";
-  return v;
-}
-
-function loadSource() {
-  try {
-    return localStorage.getItem(SOURCE_KEY) || "both";
-  } catch {
-    return "both";
-  }
-}
-
-function saveSource(v) {
-  try {
-    localStorage.setItem(SOURCE_KEY, v);
-  } catch {
-    /* not remembered */
-  }
+  if (!navigator.onLine) return "offline";
+  return offlineSupported() ? "both" : "online";
 }
 
 /** Online and offline trips in one list, sorted; each marked with where it came from. */
@@ -696,12 +677,12 @@ function showList() {
   itineraries.forEach((it, i) => {
     const li = el("li", "itin");
     const top = el("div", "itin-top");
-    top.appendChild(el("strong", "", `${clock(it.start)} → ${clock(it.end)}`));
+    const times = el("span", "itin-times");
+    times.appendChild(el("strong", "", `${clock(it.start)} → ${clock(it.end)}`));
+    if (it.source) times.appendChild(el("span", `source-tag ${it.source}`, it.source === "offline" ? "Offline" : "Online"));
+    top.appendChild(times);
     top.appendChild(el("span", "itin-dur", `${minutes(it.duration)} min`));
     li.appendChild(top);
-    if (plannerSource() === "both" && it.source) {
-      li.appendChild(el("span", `source-tag ${it.source}`, it.source === "offline" ? "Own planner" : "Peatus.ee"));
-    }
     li.appendChild(legStrip(it));
     const rides = it.legs.filter((l) => l.transit).length;
     const transfers = Math.max(0, rides - 1);
@@ -863,13 +844,6 @@ export function initPlanner(layoutCallback) {
     runPlan();
   });
   $("plan-time").addEventListener("change", runPlan);
-
-  $("plan-source").value = loadSource();
-  if (!offlineSupported()) $("plan-source").disabled = true;
-  $("plan-source").addEventListener("change", () => {
-    saveSource($("plan-source").value);
-    runPlan();
-  });
 
   $("plan-city-only").checked = loadCityOnly();
   $("plan-city-only").addEventListener("change", () => setCityOnly(cityOnly()));

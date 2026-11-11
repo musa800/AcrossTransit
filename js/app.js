@@ -4,15 +4,15 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule, getNearbyDepartures, getStopsPatterns,
-} from "./peatus.js?v=36";
+} from "./peatus.js?v=37";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, lineColor, setMode,
   initLocation, getMyPosition, getLocationError, showRoute, clearRoute,
   showNearRoutes, setNearFilter, clearNearRoutes, setNearStops,
-} from "./map.js?v=36";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=36";
-import { initRoutes, enterRoutes } from "./routes.js?v=36";
+} from "./map.js?v=37";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=37";
+import { initRoutes, enterRoutes } from "./routes.js?v=37";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
@@ -730,9 +730,23 @@ $("route-bar-close").addEventListener("click", hideRouteBar);
 
 // ---------- Offline / online ----------
 
+// A short notification when the connection drops, then it fades away.
+let offlineTimer = null;
+function showOfflineNote(offline) {
+  const b = $("offline-banner");
+  clearTimeout(offlineTimer);
+  b.classList.remove("fade");
+  b.hidden = !offline;
+  if (!offline) return;
+  offlineTimer = setTimeout(() => {
+    b.classList.add("fade");
+    offlineTimer = setTimeout(() => (b.hidden = true), 400);
+  }, 4000);
+}
+
 function updateOnlineState() {
   const offline = !navigator.onLine;
-  $("offline-banner").hidden = !offline;
+  showOfflineNote(offline);
   if (!offline) {
     // Back online: reload what's on screen.
     if (currentStop) refreshDepartures();
@@ -742,7 +756,7 @@ function updateOnlineState() {
 }
 window.addEventListener("online", updateOnlineState);
 window.addEventListener("offline", updateOnlineState);
-$("offline-banner").hidden = navigator.onLine;
+showOfflineNote(!navigator.onLine);
 
 // ---------- Start ----------
 
