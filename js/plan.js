@@ -1,15 +1,15 @@
 // Screen: the Plan tab — choose start and destination (search, map tap or
 // my location), depart/arrive time, then trip options with transfers.
 
-import { searchStops, planTrip, planMany, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=41";
-import { searchPlaces } from "./geocode.js?v=41";
+import { searchStops, planTrip, planMany, getNonTltAgencyIds, isTlt, inTallinnArea } from "./peatus.js?v=42";
+import { searchPlaces } from "./geocode.js?v=42";
 import {
   setPlanEndpoints, setPlanTapHandler, openPopupAt, closeMapPopup,
   fitPoints, showItinerary, clearItinerary, colorsForLegs, getCenter,
-} from "./map.js?v=41";
-import { lineKey } from "./vehicles.js?v=41";
-import { findBetterTransfers } from "./connect.js?v=41";
-import { planOffline, offlineSupported } from "./offline.js?v=41";
+} from "./map.js?v=42";
+import { lineKey } from "./vehicles.js?v=42";
+import { findBetterTransfers } from "./connect.js?v=42";
+import { planOffline, offlineSupported } from "./offline.js?v=42";
 
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
 const $ = (id) => document.getElementById(id);
@@ -305,9 +305,41 @@ function joinWalks(trip) {
 }
 
 /** Online and offline trips in one list, sorted; each marked with where it came from. */
+const rides = (t) => t.legs.filter((l) => l.transit);
+
+/**
+ * The same route: the same buses in the same order, each leaving within
+ * 2 minutes (the two sources' timetables can differ a little). Walks don't
+ * matter. Trips with no bus at all are the same as each other.
+ */
+function sameRoute(a, b) {
+  const ra = rides(a), rb = rides(b);
+  if (ra.length !== rb.length) return false;
+  return ra.every((x, i) => {
+    const y = rb[i];
+    const sameLine = x.mode === y.mode && (x.line === y.line || x.mode === "RAIL");
+    return sameLine && Math.abs(x.start - y.start) <= 120;
+  });
+}
+
+/**
+ * Clean up the combined list:
+ * - the same route from both planners: keep only the official (Peatus.ee) one
+ * - trips arriving in the same minute: keep the ones with the fewest buses
+ */
+function cleanUp(list) {
+  const official = list.filter((t) => t.source !== "offline");
+  let out = [...official, ...list.filter((t) => t.source === "offline" && !official.some((o) => sameRoute(o, t)))];
+  const minute = (t) => Math.floor(t.end / 60);
+  const fewest = new Map();
+  for (const t of out) fewest.set(minute(t), Math.min(fewest.get(minute(t)) ?? Infinity, rides(t).length));
+  out = out.filter((t) => rides(t).length === fewest.get(minute(t)));
+  return out;
+}
+
 function combineSources(online, offline, arriveBy) {
   const list = [...online.map((t) => ({ ...t, source: t.source || "online" })), ...offline].map(joinWalks);
-  return sortTrips(list, arriveBy).slice(0, MAX_TRIPS + (offline.length ? 5 : 0));
+  return sortTrips(cleanUp(list), arriveBy).slice(0, MAX_TRIPS + (offline.length ? 5 : 0));
 }
 
 function cityOnly() {

@@ -11,7 +11,7 @@
 // OpenStreetMap at 5 km/h, with no transfer margin; transfers with less than
 // two minutes to spare are labelled tight.
 
-import { decodePolyline } from "./peatus.js?v=41";
+import { decodePolyline } from "./peatus.js?v=42";
 
 const BASE = "data/";
 const CACHE = "acrosstransit-data-v1";
@@ -686,6 +686,69 @@ function chooseStops(day, r, accessS, egressS, minLeave, maxArrive) {
   return out;
 }
 
+/**
+ * Drop rides that don't help: if from where you were before a ride (the start,
+ * or the stop you got off the ride before) you could walk to the *next* bus
+ * and still catch that same bus, the ride is replaced by the walk. The arrival
+ * never gets later; there's just one bus less (e.g. no ride one stop the wrong
+ * way to cross the street there).
+ */
+function dropUselessRides(day, r, accessS, minLeave) {
+  let parts = r.parts.map((p) => ({ ...p }));
+  for (let guard = 0; guard < 6; guard++) {
+    const rides = parts.map((p, i) => (p.ride ? i : -1)).filter((i) => i >= 0);
+    let changed = false;
+    for (let j = 0; j + 1 < rides.length && !changed; j++) {
+      const ri = rides[j], ni = rides[j + 1];
+      const [, nAlight] = parts[ni].ride;
+      const conns = day.tripConns[day.trip[nAlight]];
+      const upTo = day.seq[nAlight]; // board no later than where you get off
+      if (j === 0 && ri > 0 && parts[ri - 1].access !== undefined) {
+        // Before the first ride: the start. Walk straight to the next bus?
+        const cands = [];
+        for (let k = 0; k <= upTo; k++) {
+          const cc = conns[k];
+          const a = accessS.get(day.from[cc]);
+          if (a === undefined) continue;
+          const leave = day.dep[cc] - a;
+          if (leave < minLeave) continue;
+          cands.push({ conn: cc, walk: a, leave });
+        }
+        const pick = pickStop(cands, (x) => x.leave);
+        if (pick) {
+          parts = [{ access: day.from[pick.conn] }, { ride: [pick.conn, nAlight] }, ...parts.slice(ni + 1)];
+          changed = true;
+        }
+      } else if (j > 0) {
+        // Before this ride: the stop you got off the ride before.
+        const [, pAlight] = parts[rides[j - 1]].ride;
+        const s = day.to[pAlight];
+        const t = day.arr[pAlight];
+        const walks = new Map([[s, 0], ...(transfers[s] || [])]);
+        let best = null;
+        for (let k = 0; k <= upTo; k++) {
+          const cc = conns[k];
+          const m = walks.get(day.from[cc]);
+          if (m === undefined || t + m / WALK_SPEED > day.dep[cc]) continue;
+          if (!best || m < best.m) best = { conn: cc, m };
+        }
+        if (best) {
+          const to = day.from[best.conn];
+          parts = [
+            ...parts.slice(0, rides[j - 1] + 1),
+            ...(to !== s ? [{ walk: [s, to] }] : []),
+            { ride: [best.conn, nAlight] },
+            ...parts.slice(ni + 1),
+          ];
+          changed = true;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+  return { ...r, parts };
+}
+
 // ---------------------------------------------------------------- public
 
 /** True if the phone can run the offline planner at all. */
@@ -725,7 +788,7 @@ export async function planOffline(from, to, when, arriveBy, cityOnly, onStatus =
   for (let round = 0; round < 16 && results.length < (arriveBy ? 12 : MAX_RESULTS); round++) {
     const found = scan(day, startS, accessAt(startS), egressS, cityOnly);
     if (!found) break;
-    const r = chooseStops(day, found, accessS, egressS, minLeave, maxArrive);
+    const r = dropUselessRides(day, chooseStops(day, found, accessS, egressS, minLeave, maxArrive), accessS, minLeave);
     const firstRide = r.parts.find((p) => p.ride);
     if (!firstRide) break; // walking is quicker: no trip needed
     const boardS = day.dep[firstRide.ride[0]];

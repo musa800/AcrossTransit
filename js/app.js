@@ -4,20 +4,20 @@
 import {
   searchStops, getStopDepartures, getStopsInBox, getStopPatterns,
   getStopLineDepartures, getStopLineSchedule, getNearbyDepartures, getStopsPatterns,
-} from "./peatus.js?v=41";
+} from "./peatus.js?v=42";
 import {
   initMap, showMap, hideMap, resizeMap, setStop, clearStop, centreOnMe,
   setStopSource, getCenter, showStopRoutes, setLineFilter, setMode, forgetOfflineStops,
   initLocation, getMyPosition, getLocationError, showRoute, clearRoute,
   showNearRoutes, setNearFilter, clearNearRoutes, setNearStops,
-} from "./map.js?v=41";
-import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=41";
-import { initRoutes, enterRoutes } from "./routes.js?v=41";
-import { lineColor } from "./colors.js?v=41";
+} from "./map.js?v=42";
+import { initPlanner, isSheetOpen as isPlanSheetOpen } from "./plan.js?v=42";
+import { initRoutes, enterRoutes } from "./routes.js?v=42";
+import { lineColor } from "./colors.js?v=42";
 import {
   offlineSupported, isOfflineStop, offlineStopDepartures, offlinePatterns, offlineNearby,
   offlineSchedule, offlineDays, offlineStopsInBox, prefetchOffline,
-} from "./offline.js?v=41";
+} from "./offline.js?v=42";
 
 const DEPARTURES_REFRESH_MS = 30000;
 const MODES = ["BUS", "TROLLEYBUS", "TRAM", "RAIL"];
